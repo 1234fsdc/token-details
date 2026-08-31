@@ -1,0 +1,268 @@
+<!doctype html><html><head><meta charset="utf-8"><title>ZCode TPS 面板重设计 — 3 个亮色方向</title>
+<style>
+*{margin:0;box-sizing:border-box}
+body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:#1a1d22;
+background:#eef0f3;min-height:100vh}
+.wrap{max-width:1100px;margin:0 auto;padding:44px 28px 90px}
+h1{font-size:22px;font-weight:700}
+.lede{margin:10px 0 4px;font-size:13px;color:#5c6675;max-width:780px;line-height:1.7}
+.dir{margin-top:60px}
+.dir>h2{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.dir>h2 .tag{font-size:10px;font-weight:600;letter-spacing:2px;padding:3px 10px;border-radius:20px;
+background:#e2e6ec;color:#5c6675}
+.traits{margin:10px 0 18px;font-size:12.5px;color:#5c6675;line-height:1.8;max-width:840px}
+.traits b{color:#1a1d22;font-weight:600}
+.shot{padding:30px;border-radius:16px;display:flex;gap:34px;align-items:flex-start;flex-wrap:wrap}
+.shot-a{background:linear-gradient(150deg,#e9e5da,#ddd8cb)}
+.shot-b{background:linear-gradient(135deg,#d9e8fb,#e6e2fa 48%,#d5f2e4)}
+.shot-c{background:#f2f4f7;
+background-image:linear-gradient(#e3e7ee 1px,transparent 1px),linear-gradient(90deg,#e3e7ee 1px,transparent 1px);
+background-size:26px 26px}
+.plabel{font-size:10px;letter-spacing:2.5px;color:#7c8798;text-transform:uppercase;margin-bottom:9px}
+.note{margin-top:30px;font-size:11.5px;color:#7c8798}
+
+/* ============ A 纸面印刷 ============ */
+.a-brief{width:250px;background:#fffdf8;border:1px solid #e6e2d8;border-radius:12px;
+padding:8px 16px 6px;box-shadow:0 10px 28px rgba(90,80,55,.18)}
+.a-row{padding:11px 0 10px;border-bottom:1px solid #f0ece1}
+.a-row:last-child{border-bottom:none;padding-bottom:6px}
+.a-l1{display:flex;align-items:baseline;gap:8px}
+.a-nm{font-size:12px;font-weight:600;color:#1a1d22;letter-spacing:.1px}
+.a-prov{font-size:9px;color:#9a978c;text-transform:uppercase;letter-spacing:1px}
+.a-v{margin-left:auto;font-family:Bahnschrift,"Segoe UI Variable Display",sans-serif;
+font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.a-v small{font-size:9px;color:#9a978c;font-family:"Segoe UI",sans-serif;font-weight:400}
+.a-bar{height:2px;background:#f0ece1;margin-top:7px;border-radius:2px;overflow:hidden}
+.a-bar i{display:block;height:100%;border-radius:2px}
+.fast-a{color:#0a8f46}.mid-a{color:#d97706}.slow-a{color:#dc2626}
+.fast-af{background:#0a8f46}.mid-af{background:#d97706}.slow-af{background:#dc2626}
+.a-detail{width:680px;background:#fffdf8;border:1px solid #e6e2d8;border-radius:16px;
+padding:22px 26px;color:#1a1d22;box-shadow:0 10px 28px rgba(90,80,55,.18)}
+.a-head{display:flex;align-items:center;gap:8px;padding-bottom:14px}
+.a-head .t{font-size:15px;font-weight:700;letter-spacing:.5px}
+.a-head .dot{width:7px;height:7px;border-radius:50%;background:#ff4d2e;
+box-shadow:0 0 0 3px rgba(255,77,46,.15);margin-left:2px}
+.a-head .d{margin-left:auto;font-size:11px;color:#9a978c;font-variant-numeric:tabular-nums}
+.a-stats{display:flex;border-top:1px solid #e9e5da;border-bottom:1px solid #e9e5da}
+.a-stat{flex:1;padding:14px 18px 13px;border-left:1px solid #e9e5da}
+.a-stat:first-child{padding-left:2px;border-left:none}
+.a-stat .k{font-size:9.5px;color:#9a978c;text-transform:uppercase;letter-spacing:1.8px;margin-bottom:5px}
+.a-stat .v{font-family:Bahnschrift,"Segoe UI Variable Display",sans-serif;
+font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
+.a-stat .v small{font-size:11px;color:#9a978c;font-weight:400;font-family:"Segoe UI",sans-serif}
+.a-sec{margin:18px 2px 2px;font-size:9.5px;color:#9a978c;text-transform:uppercase;letter-spacing:1.8px}
+.a-tr{padding:11px 2px 12px;border-bottom:1px solid #f0ece1}
+.a-tr:last-child{border-bottom:none}
+.a-t1{display:flex;align-items:baseline;gap:8px}
+.a-tr .nm{font-size:13px;font-weight:600;color:#1a1d22}
+.a-tr .meta{margin-left:auto;display:flex;gap:14px;font-size:10.5px;color:#9a978c;
+font-variant-numeric:tabular-nums;white-space:nowrap}
+.a-tr .v{margin-left:16px;font-family:Bahnschrift,"Segoe UI Variable Display",sans-serif;
+font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.a-tr .bar{height:2px;background:#f0ece1;margin-top:8px;border-radius:2px;overflow:hidden}
+.a-tr .bar i{display:block;height:100%;border-radius:2px}
+
+/* ============ B 晨雾玻璃 ============ */
+.b-brief{width:250px;border-radius:20px;padding:12px 16px 8px;position:relative;
+background:linear-gradient(165deg,rgba(255,255,255,.92),rgba(255,255,255,.68));
+border:1px solid rgba(255,255,255,.95);box-shadow:0 16px 40px rgba(96,116,160,.28),
+inset 0 1px 0 rgba(255,255,255,.9)}
+.b-brief::before{content:"";position:absolute;top:-1px;left:18px;right:18px;height:1px;
+background:linear-gradient(90deg,transparent,#38bdf8,#34d399,transparent)}
+.b-row{padding:10px 0 11px;border-bottom:1px solid rgba(120,140,170,.14)}
+.b-row:last-child{border-bottom:none;padding-bottom:4px}
+.b-l1{display:flex;align-items:center;gap:7px}
+.b-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+font-size:12px;font-weight:600;color:#25314a}
+.b-prov{font-size:9px;color:#68789c;background:rgba(120,140,190,.13);
+padding:2px 8px;border-radius:20px;white-space:nowrap}
+.b-v{font-family:Bahnschrift,"Segoe UI Variable Display",sans-serif;font-size:19px;font-weight:700;
+font-variant-numeric:tabular-nums;white-space:nowrap}
+.b-v small{font-size:9px;color:#68789c;font-family:"Segoe UI",sans-serif;font-weight:400}
+.b-bar{height:4px;border-radius:4px;background:rgba(120,140,170,.16);margin-top:8px;overflow:hidden}
+.b-bar i{display:block;height:100%;border-radius:4px}
+.fast-b{color:#0ea5a4;text-shadow:none}.mid-b{color:#e08c0b}.slow-b{color:#e5484d}
+.fast-bf{background:linear-gradient(90deg,#2dd4bf,#38bdf8);box-shadow:0 0 8px rgba(56,189,248,.4)}
+.mid-bf{background:linear-gradient(90deg,#fbbf24,#fb923c);box-shadow:0 0 8px rgba(251,191,36,.35)}
+.slow-bf{background:linear-gradient(90deg,#fb7185,#f43f5e);box-shadow:0 0 8px rgba(251,113,133,.35)}
+.b-detail{width:680px;border-radius:24px;padding:22px 24px;position:relative;
+background:linear-gradient(165deg,rgba(255,255,255,.94),rgba(255,255,255,.74));
+border:1px solid rgba(255,255,255,.95);
+box-shadow:0 20px 50px rgba(96,116,160,.3),inset 0 1px 0 rgba(255,255,255,.9)}
+.b-detail::before{content:"";position:absolute;top:-1px;left:26px;right:26px;height:1px;
+background:linear-gradient(90deg,transparent,#38bdf8,#34d399,transparent)}
+.b-head{display:flex;align-items:baseline;gap:9px;margin-bottom:15px}
+.b-head .t{font-size:15px;font-weight:700;color:#25314a}
+.b-head .grad{background:linear-gradient(90deg,#0ea5a4,#3b82f6);
+-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:700;font-size:13px}
+.b-head .d{margin-left:auto;font-size:10.5px;color:#68789c;letter-spacing:.5px}
+.b-stats{display:flex;gap:10px;margin-bottom:16px}
+.b-stat{flex:1;background:rgba(255,255,255,.6);border:1px solid rgba(255,255,255,.9);
+border-radius:16px;padding:12px 16px;box-shadow:0 6px 18px rgba(96,116,160,.14)}
+.b-stat .k{font-size:9.5px;color:#68789c;text-transform:uppercase;letter-spacing:1.6px;margin-bottom:6px}
+.b-stat .v{font-family:Bahnschrift,"Segoe UI Variable Display",sans-serif;
+font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1;color:#25314a}
+.b-stat .v small{font-size:10px;color:#68789c;font-weight:400;font-family:"Segoe UI",sans-serif}
+.b-stat .v.g{background:linear-gradient(90deg,#0ea5a4,#3b82f6);
+-webkit-background-clip:text;background-clip:text;color:transparent}
+.b-srow{background:rgba(255,255,255,.55);border:1px solid rgba(255,255,255,.9);
+border-radius:16px;padding:11px 15px 12px;margin-bottom:9px;box-shadow:0 6px 18px rgba(96,116,160,.12)}
+.b-t1{display:flex;align-items:baseline;gap:8px}
+.b-srow .nm{font-size:13px;font-weight:600;color:#25314a;min-width:0;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.b-srow .meta{margin-left:auto;display:flex;gap:14px;font-size:10.5px;color:#68789c;
+font-variant-numeric:tabular-nums;white-space:nowrap}
+.b-srow .v{margin-left:16px;font-family:Bahnschrift,"Segoe UI Variable Display",sans-serif;
+font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.b-srow .bar{height:4px;border-radius:4px;background:rgba(120,140,170,.16);margin-top:9px;overflow:hidden}
+.b-srow .bar i{display:block;height:100%;border-radius:4px}
+
+/* ============ C 网格仪表 ============ */
+.c-brief{width:250px;background:#ffffff;border:1px solid #d9dee7;border-radius:8px;
+padding:8px 0 5px;box-shadow:0 2px 10px rgba(40,60,90,.1);font-family:"Cascadia Mono",Consolas,monospace}
+.c-row{padding:8px 14px 9px;border-bottom:1px solid #eef1f5}
+.c-row:last-child{border-bottom:none;padding-bottom:5px}
+.c-l1{display:flex;align-items:baseline;gap:8px}
+.c-nm{font-size:11px;font-weight:700;color:#232a35;letter-spacing:-.2px}
+.c-prov{font-size:9px;color:#7a8494}
+.c-v{margin-left:auto;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.c-v small{font-size:8.5px;color:#7a8494;font-weight:400}
+.c-bar{height:3px;background:#eef1f5;margin-top:6px;overflow:hidden}
+.c-bar i{display:block;height:100%}
+.fast-c{color:#059669}.mid-c{color:#d97706}.slow-c{color:#dc2626}
+.fast-cf{background:#059669}.mid-cf{background:#d97706}.slow-cf{background:#dc2626}
+.c-detail{width:680px;background:#ffffff;border:1px solid #d9dee7;border-radius:8px;
+padding:0;box-shadow:0 2px 10px rgba(40,60,90,.1);font-family:"Cascadia Mono",Consolas,monospace;overflow:hidden}
+.c-head{display:flex;align-items:center;gap:10px;background:#232a35;color:#fff;padding:10px 16px}
+.c-head .t{font-size:11px;font-weight:700;letter-spacing:2px}
+.c-head .chip{font-size:9px;letter-spacing:1.5px;padding:2px 8px;border-radius:3px;
+background:rgba(255,255,255,.14);color:#7dd3fc}
+.c-head .d{margin-left:auto;font-size:9.5px;color:#9aa5b5;font-variant-numeric:tabular-nums}
+.c-stats{display:flex;border-bottom:1px solid #e3e7ee}
+.c-stat{flex:1;padding:12px 16px;border-left:1px solid #e3e7ee}
+.c-stat:first-child{border-left:none}
+.c-stat .k{font-size:9px;color:#7a8494;text-transform:uppercase;letter-spacing:1.6px;margin-bottom:5px}
+.c-stat .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;color:#232a35}
+.c-stat .v small{font-size:9px;color:#7a8494;font-weight:400}
+.c-sec{padding:10px 16px 6px;font-size:9px;color:#7a8494;text-transform:uppercase;letter-spacing:1.6px;
+border-bottom:1px solid #eef1f5;display:flex;justify-content:space-between}
+.c-tr{display:flex;align-items:center;gap:14px;padding:9px 16px;border-bottom:1px solid #eef1f5;font-size:11.5px}
+.c-tr:last-child{border-bottom:none}
+.c-tr .nm{width:200px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;color:#232a35}
+.c-tr .v{width:64px;text-align:right;font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.c-tr .bar{width:120px;height:3px;background:#eef1f5;overflow:hidden;flex:none}
+.c-tr .bar i{display:block;height:100%}
+.c-tr .meta{margin-left:auto;display:flex;gap:14px;font-size:10px;color:#7a8494;
+font-variant-numeric:tabular-nums;white-space:nowrap}
+</style></head><body><div class="wrap">
+
+<h1>ZCode Token 速度 · 面板重设计（亮色）</h1>
+<p class="lede">三个亮色方向，每个画出<b>简略悬浮面板（左，真实尺寸 250px）</b>与<b>详情面板（右，680px）</b>。
+每个方案放在不同的桌面底色上，看真实挂桌效果。数据为示例，选定后直接落进 token_speed.py。</p>
+
+<!-- ================= A ================= -->
+<section class="dir">
+<h2>方案 A · 纸面印刷 <span class="tag">PORCELAIN SWISS</span></h2>
+<p class="traits">暖白纸卡、发丝线、超大 DIN 数字（Bahnschrift）、朱红 live 点、几乎无装饰。
+像瑞士时刻表 / Braun 仪表：安静克制，数字是唯一主角。适合深色或暖色壁纸。</p>
+<div class="shot shot-a">
+<div><div class="plabel">简略面板</div>
+<div class="a-brief">
+<div class="a-row"><div class="a-l1"><span class="a-nm">glm-5.3-flash</span><span class="a-prov">bigmodel</span><span class="a-v fast-a">104.2<small> t/s</small></span></div>
+<div class="a-bar"><i class="fast-af" style="width:87%"></i></div></div>
+<div class="a-row"><div class="a-l1"><span class="a-nm">deepseek-v4</span><span class="a-prov">dots</span><span class="a-v mid-a">47.8<small> t/s</small></span></div>
+<div class="a-bar"><i class="mid-af" style="width:40%"></i></div></div>
+<div class="a-row"><div class="a-l1"><span class="a-nm">claude-sonnet-4-6</span><span class="a-prov">b.ai</span><span class="a-v slow-a">28.3<small> t/s</small></span></div>
+<div class="a-bar"><i class="slow-af" style="width:24%"></i></div></div>
+</div></div>
+<div><div class="plabel">详情面板</div>
+<div class="a-detail">
+<div class="a-head"><span class="t">速度详情</span><span class="dot"></span><span class="d">08-30 · 实时刷新</span></div>
+<div class="a-stats">
+<div class="a-stat"><div class="k">今日请求</div><div class="v">128<small> 次</small></div></div>
+<div class="a-stat"><div class="k">平均速度</div><div class="v mid-a">38.2<small> t/s</small></div></div>
+<div class="a-stat"><div class="k">今日 tokens</div><div class="v">1,284,600</div></div>
+</div>
+<div class="a-sec">活跃会话 · 30 分钟窗口</div>
+<div class="a-tr"><div class="a-t1"><span class="nm">TPS 悬浮窗重设计</span><span class="meta"><span>首字 1.1s</span><span>9.4 次/分</span><span>32 次</span><span>182,340 tok</span><span>22:41</span></span><span class="v fast-a">88.9</span></div>
+<div class="bar"><i class="fast-af" style="width:74%"></i></div></div>
+<div class="a-tr"><div class="a-t1"><span class="nm">ZCode 数据库 schema 排查</span><span class="meta"><span>首字 0.9s</span><span>6.2 次/分</span><span>21 次</span><span>96,410 tok</span><span>22:18</span></span><span class="v mid-a">61.5</span></div>
+<div class="bar"><i class="mid-af" style="width:51%"></i></div></div>
+<div class="a-tr"><div class="a-t1"><span class="nm">前端组件重构</span><span class="meta"><span>首字 1.4s</span><span>4.8 次/分</span><span>14 次</span><span>74,020 tok</span><span>21:52</span></span><span class="v mid-a">47.2</span></div>
+<div class="bar"><i class="mid-af" style="width:39%"></i></div></div>
+<div class="a-tr"><div class="a-t1"><span class="nm">爬虫脚本调试</span><span class="meta"><span>首字 1.8s</span><span>2.5 次/分</span><span>11 次</span><span>39,760 tok</span><span>20:44</span></span><span class="v slow-a">26.4*</span></div>
+<div class="bar"><i class="slow-af" style="width:22%"></i></div></div>
+</div></div>
+</div>
+</section>
+
+<!-- ================= B ================= -->
+<section class="dir">
+<h2>方案 B · 晨雾玻璃 <span class="tag">FROSTED MORNING</span></h2>
+<p class="traits">半透白玻璃卡、大圆角、顶部青蓝渐变发丝线、渐变速度条、柔和长阴影。
+像 macOS / iOS 桌面小组件：轻盈通透，带一点华丽。速度条本身是视觉主角。</p>
+<div class="shot shot-b">
+<div><div class="plabel">简略面板</div>
+<div class="b-brief">
+<div class="b-row"><div class="b-l1"><span class="b-nm">glm-5.3-flash</span><span class="b-prov">BigModel</span><span class="b-v fast-b">104.2<small> t/s</small></span></div>
+<div class="b-bar"><i class="fast-bf" style="width:87%"></i></div></div>
+<div class="b-row"><div class="b-l1"><span class="b-nm">deepseek-v4</span><span class="b-prov">Dots</span><span class="b-v mid-b">47.8<small> t/s</small></span></div>
+<div class="b-bar"><i class="mid-bf" style="width:40%"></i></div></div>
+<div class="b-row"><div class="b-l1"><span class="b-nm">claude-sonnet-4-6</span><span class="b-prov">B.ai</span><span class="b-v slow-b">28.3<small> t/s</small></span></div>
+<div class="b-bar"><i class="slow-bf" style="width:24%"></i></div></div>
+</div></div>
+<div><div class="plabel">详情面板</div>
+<div class="b-detail">
+<div class="b-head"><span class="t">速度详情</span><span class="grad">· 实时</span><span class="d">08-30 · 30 分钟窗口</span></div>
+<div class="b-stats">
+<div class="b-stat"><div class="k">今日请求</div><div class="v g">128</div></div>
+<div class="b-stat"><div class="k">平均速度</div><div class="v mid-b">38.2<small> t/s</small></div></div>
+<div class="b-stat"><div class="k">今日 tokens</div><div class="v">1,284,600</div></div>
+</div>
+<div class="b-srow"><div class="b-t1"><span class="nm">TPS 悬浮窗重设计</span><span class="meta"><span>首字 1.1s</span><span>9.4 次/分</span><span>32 次</span><span>182,340 tok</span><span>22:41</span></span><span class="v fast-b">88.9</span></div>
+<div class="bar"><i class="fast-bf" style="width:74%"></i></div></div>
+<div class="b-srow"><div class="b-t1"><span class="nm">ZCode 数据库 schema 排查</span><span class="meta"><span>首字 0.9s</span><span>6.2 次/分</span><span>21 次</span><span>96,410 tok</span><span>22:18</span></span><span class="v mid-b">61.5</span></div>
+<div class="bar"><i class="mid-bf" style="width:51%"></i></div></div>
+<div class="b-srow"><div class="b-t1"><span class="nm">前端组件重构</span><span class="meta"><span>首字 1.4s</span><span>4.8 次/分</span><span>14 次</span><span>74,020 tok</span><span>21:52</span></span><span class="v mid-b">47.2</span></div>
+<div class="bar"><i class="mid-bf" style="width:39%"></i></div></div>
+<div class="b-srow"><div class="b-t1"><span class="nm">爬虫脚本调试</span><span class="meta"><span>首字 1.8s</span><span>2.5 次/分</span><span>11 次</span><span>39,760 tok</span><span>20:44</span></span><span class="v slow-b">26.4*</span></div>
+<div class="bar"><i class="slow-bf" style="width:22%"></i></div></div>
+</div></div>
+</div>
+</section>
+
+<!-- ================= C ================= -->
+<section class="dir">
+<h2>方案 C · 网格仪表 <span class="tag">LIGHT GRID</span></h2>
+<p class="traits">白底直角卡、细网格、等宽数字（Cascadia）、深色表头条、蓝色数据强调。
+像浅色版 Grafana / IDE 内嵌面板：信息密度最高，纯工具感。</p>
+<div class="shot shot-c">
+<div><div class="plabel">简略面板</div>
+<div class="c-brief">
+<div class="c-row"><div class="c-l1"><span class="c-nm">glm-5.3-flash</span><span class="c-prov">bigmodel</span><span class="c-v fast-c">104.2<small> t/s</small></span></div>
+<div class="c-bar"><i class="fast-cf" style="width:87%"></i></div></div>
+<div class="c-row"><div class="c-l1"><span class="c-nm">deepseek-v4</span><span class="c-prov">dots</span><span class="c-v mid-c">47.8<small> t/s</small></span></div>
+<div class="c-bar"><i class="mid-cf" style="width:40%"></i></div></div>
+<div class="c-row"><div class="c-l1"><span class="c-nm">claude-sonnet-4-6</span><span class="c-prov">b.ai</span><span class="c-v slow-c">28.3<small> t/s</small></span></div>
+<div class="c-bar"><i class="slow-cf" style="width:24%"></i></div></div>
+</div></div>
+<div><div class="plabel">详情面板</div>
+<div class="c-detail">
+<div class="c-head"><span class="t">ZCODE TPS · 详情</span><span class="chip">LIVE</span><span class="d">08-30 · 30MIN WINDOW</span></div>
+<div class="c-stats">
+<div class="c-stat"><div class="k">今日请求</div><div class="v">128<small> 次</small></div></div>
+<div class="c-stat"><div class="k">平均速度</div><div class="v mid-c">38.2<small> t/s</small></div></div>
+<div class="c-stat"><div class="k">今日 tokens</div><div class="v">1,284,600</div></div>
+</div>
+<div class="c-sec"><span>活跃会话</span><span>30 分钟窗口</span></div>
+<div class="c-tr"><span class="nm">TPS 悬浮窗重设计</span><span class="bar"><i class="fast-cf" style="width:74%"></i></span><span class="v fast-c">88.9</span><span class="meta"><span>首字 1.1s</span><span>9.4 次/分</span><span>182,340 tok</span><span>22:41</span></span></div>
+<div class="c-tr"><span class="nm">ZCode 数据库 schema 排查</span><span class="bar"><i class="mid-cf" style="width:51%"></i></span><span class="v mid-c">61.5</span><span class="meta"><span>首字 0.9s</span><span>6.2 次/分</span><span>96,410 tok</span><span>22:18</span></span></div>
+<div class="c-tr"><span class="nm">前端组件重构</span><span class="bar"><i class="mid-cf" style="width:39%"></i></span><span class="v mid-c">47.2</span><span class="meta"><span>首字 1.4s</span><span>4.8 次/分</span><span>74,020 tok</span><span>21:52</span></span></div>
+<div class="c-tr"><span class="nm">爬虫脚本调试</span><span class="bar"><i class="slow-cf" style="width:22%"></i></span><span class="v slow-c">26.4*</span><span class="meta"><span>首字 1.8s</span><span>2.5 次/分</span><span>39,760 tok</span><span>20:44</span></span></div>
+</div></div>
+</div>
+</section>
+
+<p class="note">说明：悬浮面板默认半透明（现有 105/255 窗口透明度），悬停变实；预览为 100% 不透明状态。
+简略面板速度阈值 ≥80 绿 / ≥50 黄 / &lt;50 红；bar 满格 = 120 t/s 封顶。方案 B 的玻璃半透明在真机上与桌面底色混合后更柔和。</p>
+</div></body></html>
