@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """一体化把手验证：把手热区可交互可拖动整面板，离开热区恢复穿透。"""
-import ctypes, subprocess, sys, time
+import ctypes, os, subprocess, sys, time
+
+APP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token_speed.py")
+TITLE = "Token Details"  # 与 token_speed.py 的 TITLE 保持一致（FindWindowW 锚点）
 
 # 应用进程是 DPI-aware（真实坐标），测试必须同空间，否则 SetCursorPos 差一倍
 try:
@@ -15,7 +18,7 @@ class RECT(ctypes.Structure):
                 ("r", ctypes.c_long), ("b", ctypes.c_long)]
 
 def main_rect_ex():
-    mh = u32.FindWindowW(None, "ZCode Token 速度")
+    mh = u32.FindWindowW(None, TITLE)
     assert mh, "main window missing"
     rc = RECT()
     u32.GetWindowRect(mh, ctypes.byref(rc))
@@ -25,13 +28,13 @@ def move_to(x, y):
     u32.SetCursorPos(int(x), int(y))
     u32.mouse_event(0x0001, 0, 0, 0, 0)
 
-p = subprocess.Popen([sys.executable, r"C:\Users\木\Desktop\talk\token_speed.py"])
+p = subprocess.Popen([sys.executable, APP])
 time.sleep(7)
 rc0, ex0 = main_rect_ex()
 assert ex0 & 0x20, "default must be click-through"
 
 # 悬停把手热区（左上角 42x20 CSS 内）→ 穿透应解除
-dpi = u32.GetDpiForWindow(u32.FindWindowW(None, "ZCode Token 速度")) or 96
+dpi = u32.GetDpiForWindow(u32.FindWindowW(None, TITLE)) or 96
 gx, gy = rc0.l + round(20 * dpi / 96), rc0.t + round(10 * dpi / 96)
 move_to(gx, gy); time.sleep(0.6)
 _, ex1 = main_rect_ex()

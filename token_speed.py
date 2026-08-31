@@ -11,6 +11,7 @@
 """
 import ctypes
 import ctypes.wintypes as wintypes
+import html
 import os
 import json
 import sqlite3
@@ -29,6 +30,18 @@ POLL_MS = 1000
 LOG = None  # --log-file PATH：内容变化时追加一帧，测试观察口
 TITLE = "Token Details"          # 主窗/托盘名（HTML <title> 必须与其一致，FindWindowW 锚点）
 DETAIL_TITLE = "Token Details 详情"
+ERRLOG = r"C:/Users/Public/weberr.log"  # 调试日志，errlog() 内超 1MB 截断
+
+
+def errlog(tag, exc):
+    try:
+        if os.path.exists(ERRLOG) and os.path.getsize(ERRLOG) > 1_000_000:
+            open(ERRLOG, "w").close()
+        with open(ERRLOG, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] [{tag}] "
+                    f"{type(exc).__name__}: {exc}\n")
+    except Exception:
+        pass
 
 
 def log_frame(text):
@@ -68,10 +81,10 @@ def today_summary(db):
 def provider_names():
     """provider_id -> 可读名，启动时读一次。名称分散在 cli 和 v2 两份 config。"""
     names = {}
-    for path in (r"C:/Users/木/.zcode/cli/config.json",
-                 r"C:/Users/木/.zcode/v2/config.json"):
+    for path in (CFG, _home + "/.zcode/v2/config.json"):
         try:
-            cfg = json.load(open(path, encoding="utf-8"))
+            with open(path, encoding="utf-8") as f:
+                cfg = json.load(f)
         except Exception:
             continue
         provs = cfg.get("providers") or cfg.get("provider") or {}
@@ -131,10 +144,10 @@ def self_check():
     aggs = avg_by_model([b, c, a])  # c 无精确首字 → 舍弃，只算 a+b
     assert len(aggs) == 1 and abs(aggs[0]["tps"] - 500.0) < 0.01 and aggs[0]["mark"] == "", aggs
     # detail_inner：会话行 + 今日统计 + 速度条渲染
-    inner = detail_inner([{"sid": "s", "title": "测试会话", "cnt": 2, "tok": 1500,
+    inner = detail_inner([{"sid": "s", "title": "测<b>&试", "cnt": 2, "tok": 1500,
                            "tps": 500.0, "mark": "", "last": 100000,
-                           "ttft": 1.0, "rpm": 2.0}], {}, 3, 1500, 3000)
-    assert "测试会话" in inner and "500.0" in inner and "width:100%" in inner
+                           "ttft": 1.0, "rpm": 2.0}], 3, 1500, 3000)
+    assert "测&lt;b&gt;&amp;试" in inner and "500.0" in inner and "width:100%" in inner
     print("self-check OK")
 
 
@@ -213,7 +226,7 @@ def session_stats(db, limit=30, window_ms=30 * 60 * 1000):
     return out
 
 
-def detail_inner(rows, provs, n, tok, ms):
+def detail_inner(rows, n, tok, ms):
     """详情窗活动区（今日统计 + 会话列表）。push_loop 每秒只替换 #live，
     不再整页 document.write（滚动位置不丢）。"""
     body = ""
@@ -223,7 +236,7 @@ def detail_inner(rows, provs, n, tok, ms):
             if s["last"] else "-"
         ttft = f"{s['ttft']:.1f}s" if s["ttft"] is not None else "-"
         w = min(100, round(s["tps"] / 120 * 100))  # bar 满格 = 120 t/s
-        body += (f"<div class='row'><div class='t1'><span class='nm'>{s['title']}</span>"
+        body += (f"<div class='row'><div class='t1'><span class='nm'>{html.escape(s['title'])}</span>"
                  f"<span class='meta'><span>首字 {ttft}</span>"
                  f"<span>{s['rpm']:.1f} 次/分</span><span>{s['cnt']} 次</span>"
                  f"<span>{s['tok']:,} tok</span><span>{when}</span></span>"
@@ -244,7 +257,7 @@ def detail_inner(rows, provs, n, tok, ms):
             + (body or "<div class='empty'>30 分钟内无活动会话</div>"))
 
 
-def detail_html(rows, provs, n, tok, ms):
+def detail_html(rows, n, tok, ms):
     """详情弹窗整页（打开瞬间渲染，方案 A「纸面印刷」亮色）；此后每秒只换 #live。"""
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>{DETAIL_TITLE}</title><style>
 *{{margin:0;box-sizing:border-box}}
@@ -285,7 +298,7 @@ font-variant-numeric:tabular-nums;white-space:nowrap}}
 .fast{{color:var(--fast)}}.mid{{color:var(--mid)}}.slow{{color:var(--slow)}}
 i.fast{{background:var(--fast)}}i.mid{{background:var(--mid)}}i.slow{{background:var(--slow)}}
 .empty{{color:var(--muted);text-align:center;padding:40px 0}}
-</style></head><body><div id="live">{detail_inner(rows, provs, n, tok, ms)}</div></body></html>"""
+</style></head><body><div id="live">{detail_inner(rows, n, tok, ms)}</div></body></html>"""
 
 
 HTML = """<!doctype html><html><head><meta charset="utf-8">
@@ -339,7 +352,6 @@ def run_web(db):
     provs = provider_names()
 
     u32 = ctypes.WinDLL("user32", use_last_error=True)
-    dpi = ctypes.WinDLL("user32", use_last_error=True).GetDpiForSystem() or 96
 
     class POINT(ctypes.Structure):
         _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
@@ -386,16 +398,11 @@ def run_web(db):
                                              wy + pt.y - y0, 0, 0,
                                              0x0001 | 0x0010)  # NOSIZE|NOACTIVATE
             except Exception as e:
-                try:
-                    with open(r'C:/Users/Public/weberr.log', 'a', encoding='utf-8') as f:
-                        f.write(f"[hover] {type(e).__name__}: {e}\n")
-                except Exception:
-                    pass
+                errlog("hover", e)
             time.sleep(0.05)
 
     def push_loop():
         # evaluate_js 推送（修线程后已验证 60s 稳定）；行数固定为启动时值
-        fails = 0
         time.sleep(1.5)
         while True:
             try:
@@ -426,7 +433,7 @@ def run_web(db):
                             continue
                         sess = session_stats(db)
                         n, tok, ms = today_summary(db)
-                        inner = json.dumps(detail_inner(sess, provs, n, tok, ms))
+                        inner = json.dumps(detail_inner(sess, n, tok, ms))
                         dw.evaluate_js(
                             f"document.getElementById('live').innerHTML={inner};")
                         alive.append(dw)
@@ -442,17 +449,8 @@ def run_web(db):
                         u32.SetWindowPos(hwnd, None, 0, 0,
                                          round(250 * dpi / 96),
                                          round(h_css * dpi / 96), 0x0002)
-                fails = 0
             except Exception as e:
-                fails += 1
-                if fails > 3:  # 隐藏期间推送失败属预期，不再自愈弹窗
-                    pass
-                try:
-                    import io as _io
-                    with open(r'C:/Users/Public/weberr.log', 'a', encoding='utf-8') as f:
-                        f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {type(e).__name__}: {e}\n")
-                except Exception:
-                    pass
+                errlog("push", e)  # 隐藏期间推送失败属预期，仅记日志
             time.sleep(1.0)
 
     def tray_loop():
@@ -506,7 +504,7 @@ def run_web(db):
         n, tok, ms = today_summary(db)
         for dw in detail_win:
             try:
-                dw.load_html(detail_html(sess, provs, n, tok, ms))
+                dw.load_html(detail_html(sess, n, tok, ms))
             except Exception:
                 pass  # 窗口刚关闭 → 下轮清列表
 
@@ -518,15 +516,11 @@ def run_web(db):
             n, tok, ms = today_summary(d)
             d.close()
             win = webview.create_window(
-                DETAIL_TITLE, html=detail_html(sessions, provs, n, tok, ms),
+                DETAIL_TITLE, html=detail_html(sessions, n, tok, ms),
                 width=680, height=760, on_top=True)
             detail_win.append(win)  # 持引用防 GC
         except Exception as e:
-            try:
-                with open(r'C:/Users/Public/weberr.log', 'a', encoding='utf-8') as f:
-                    f.write(f"[detail] {type(e).__name__}: {e}\n")
-            except Exception:
-                pass
+            errlog("detail", e)
 
     def set_window_icon():
         # 源码运行时窗口/任务栏图标是 python.exe 默认的，WM_SETICON 换成本项目 ico；
@@ -574,11 +568,7 @@ def run_web(db):
                     w.events.closing += lambda: (w.hide(), False)[1]
                     set_window_icon()
             except Exception as e:
-                try:
-                    with open(r'C:/Users/Public/weberr.log', 'a', encoding='utf-8') as f:
-                        f.write(f"[watchdog] {type(e).__name__}: {e}\n")
-                except Exception:
-                    pass
+                errlog("watchdog", e)
 
     threading.Thread(target=set_window_icon, daemon=True).start()
     threading.Thread(target=panel_watchdog, daemon=True).start()
@@ -621,7 +611,10 @@ def main():
         return
     global LOG
     if "--log-file" in sys.argv:
-        LOG = sys.argv[sys.argv.index("--log-file") + 1]
+        i = sys.argv.index("--log-file")
+        if i + 1 >= len(sys.argv):
+            sys.exit("用法: --log-file 需要一个路径参数")
+        LOG = sys.argv[i + 1]
     run_web(db)
 
 
