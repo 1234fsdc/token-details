@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Token Details v4 页面预览</title><style>
+*{margin:0;box-sizing:border-box}
+:root{--ink:#1a1d22;--muted:#9a978c;--hair:#f0ece1;--line:#e6e2d8;
+--fast:#0a8f46;--mid:#d97706;--slow:#dc2626;--verm:#ff4d2e;
+--num:Bahnschrift,"Segoe UI Variable Display","Segoe UI",sans-serif}
+html{color-scheme:light}
+body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:var(--ink);
+background:#e9e5da;font-size:13px;padding:28px 0;display:flex;justify-content:center}
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-thumb{background:#d9d2c4;border-radius:4px}
+.win{width:680px;max-width:94vw;height:760px;max-height:86vh;overflow-y:auto;
+background:#fffdf8;box-shadow:0 2px 14px rgba(26,29,34,.14);padding:20px 26px}
+.head{display:flex;align-items:center;gap:10px;padding-bottom:14px}
+.head select{font-family:inherit;font-size:15px;font-weight:700;color:var(--ink);
+background:#fffdf8;border:1px solid var(--line);border-radius:4px;padding:2px 6px;outline:none;cursor:pointer}
+.head .dot{width:7px;height:7px;border-radius:50%;background:var(--verm);
+box-shadow:0 0 0 3px rgba(255,77,46,.15)}
+.head .d{margin-left:auto;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.stats{display:flex;border-top:1px solid #e9e5da;border-bottom:1px solid #e9e5da}
+.stat{flex:1;padding:14px 18px 13px;border-left:1px solid #e9e5da}
+.stat:first-child{padding-left:2px;border-left:none}
+.k{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:1.8px;margin-bottom:5px}
+.stat .v{font-family:var(--num);font-size:30px;font-weight:700;
+font-variant-numeric:tabular-nums;line-height:1}
+.stat .v small{font-size:11px;color:var(--muted);font-weight:400;font-family:"Segoe UI",sans-serif}
+.sec{margin:18px 2px 2px;font-size:9.5px;color:var(--muted);
+text-transform:uppercase;letter-spacing:1.8px}
+.row{padding:11px 2px 12px;border-bottom:1px solid var(--hair)}
+.row:last-child{border-bottom:none}
+.t1{display:flex;align-items:baseline;gap:8px}
+.nm{font-size:13px;font-weight:600;min-width:0;flex:0 1 auto;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta{margin-left:auto;display:flex;gap:14px;font-size:10.5px;color:var(--muted);
+font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
+.t1 .v{margin-left:16px;font-family:var(--num);font-size:17px;font-weight:700;
+font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar{height:2px;background:var(--hair);margin-top:8px;border-radius:2px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:2px;transition:width .45s ease}
+.fast{color:var(--fast)}.mid{color:var(--mid)}.slow{color:var(--slow)}
+i.fast{background:var(--fast)}i.mid{background:var(--mid)}i.slow{background:var(--slow)}
+i.share{background:var(--verm)}
+.empty{color:var(--muted);text-align:center;padding:40px 0}
+.hours{display:flex;align-items:flex-end;gap:3px;height:46px;margin:10px 2px 4px}
+.hours i{flex:1;background:#d9d2c4;border-radius:2px 2px 0 0;min-height:2px}
+.hours i.peak{background:var(--verm)}
+.haxis{display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin:2px 2px 0}
+.pv{margin-top:18px;font-size:10px;color:var(--muted);text-align:center}
+</style></head><body>
+<div class="win">
+  <div class="head">
+    <select id="pg" onchange="for(const p of document.querySelectorAll('.page'))p.hidden=p.id!==this.value">
+      <option value="p1" selected>总览</option>
+      <option value="p2">速度</option>
+      <option value="p3">总量</option>
+    </select>
+    <span class="dot"></span>
+    <span class="d">08-31 · 实时刷新 · 预览样例数据</span>
+  </div>
+
+  <div id="p1" class="page">
+    <div class="stats">
+      <div class="stat"><div class="k">今日请求</div><div class="v">128<small> 次</small></div></div>
+      <div class="stat"><div class="k">平均速度</div><div class="v mid">62.4<small> t/s</small></div></div>
+      <div class="stat"><div class="k">今日 tokens</div><div class="v">183,402</div></div>
+    </div>
+    <div class="sec">活跃会话 · 30 分钟窗口</div>
+    <div class="row"><div class="t1"><span class="nm">refactor-api.js</span><span class="meta"><span>首字 1.2s</span><span>3.1 次/分</span><span>42 次</span><span>61,240 tok</span><span>08-31 20:41</span></span><span class="v mid">58.3</span></div><div class="bar"><i class="mid" style="width:49%"></i></div></div>
+    <div class="row"><div class="t1"><span class="nm">token速度</span><span class="meta"><span>首字 0.9s</span><span>1.4 次/分</span><span>18 次</span><span>24,180 tok</span><span>08-31 20:12</span></span><span class="v mid">66.1</span></div><div class="bar"><i class="mid" style="width:55%"></i></div></div>
+    <div class="row"><div class="t1"><span class="nm">探索项目中AI相关功能</span><span class="meta"><span>首字 1.8s</span><span>0.6 次/分</span><span>7 次</span><span>12,006 tok</span><span>08-31 19:38</span></span><span class="v slow">41.2</span></div><div class="bar"><i class="slow" style="width:34%"></i></div></div>
+  </div>
+
+  <div id="p2" class="page" hidden>
+    <div class="stats">
+      <div class="stat"><div class="k">今日平均速度</div><div class="v mid">62.4<small> t/s</small></div></div>
+      <div class="stat"><div class="k">活跃模型</div><div class="v">4<small> 个</small></div></div>
+      <div class="stat"><div class="k">平均首字</div><div class="v">1.4<small> s</small></div></div>
+    </div>
+    <div class="sec">每模型速度 · 最近 5 条加权</div>
+    <div class="row"><div class="t1"><span class="nm">glm-5.3</span><span class="meta"><span>智谱</span><span>20:41</span></span><span class="v mid">72.3</span></div><div class="bar"><i class="mid" style="width:60%"></i></div></div>
+    <div class="row"><div class="t1"><span class="nm">deepseek-v4-flash</span><span class="meta"><span>DeepSeek</span><span>20:36</span></span><span class="v mid">55.8</span></div><div class="bar"><i class="mid" style="width:47%"></i></div></div>
+    <div class="row"><div class="t1"><span class="nm">glm-4.7</span><span class="meta"><span>智谱</span><span>20:02</span></span><span class="v slow">48.9*</span></div><div class="bar"><i class="slow" style="width:41%"></i></div></div>
+    <div class="sec">会话速度 · 30 分钟窗口</div>
+    <div class="row"><div class="t1"><span class="nm">refactor-api.js</span><span class="meta"><span>首字 1.2s</span><span>42 次</span></span><span class="v mid">58.3</span></div><div class="bar"><i class="mid" style="width:49%"></i></div></div>
+    <div class="row"><div class="t1"><span class="nm">token速度</span><span class="meta"><span>首字 0.9s</span><span>18 次</span></span><span class="v mid">66.1</span></div><div class="bar"><i class="mid" style="width:55%"></i></div></div>
+  </div>
+
+  <div id="p3" class="page" hidden>
+    <div class="stats">
+      <div class="stat"><div class="k">今日 tokens</div><div class="v">183,402</div></div>
+      <div class="stat"><div class="k">今日请求</div><div class="v">128<small> 次</small></div></div>
+      <div class="stat"><div class="k">输出 : 推理</div><div class="v">162k<small> : </small>21k</div></div>
+    </div>
+    <div class="sec">按模型 · 今日</div>
+    <div class="row"><div class="t1"><span class="nm">glm-5.3</span><span class="meta"><span>121,340 tok</span><span>66%</span></span></div><div class="bar"><i class="share" style="width:66%"></i></div></div>
+    <div class="row"><div class="t1"><span class="nm">deepseek-v4-flash</span><span class="meta"><span>62,062 tok</span><span>34%</span></span></div><div class="bar"><i class="share" style="width:34%"></i></div></div>
+    <div class="sec">会话压缩 · 7 天内 14 次</div>
+    <div class="row"><div class="t1"><span class="nm">测试</span><span class="meta"><span>5 次</span><span>08-29 17:09</span></span></div></div>
+    <div class="row"><div class="t1"><span class="nm">token速度</span><span class="meta"><span>4 次</span><span>08-30 01:20</span></span></div></div>
+    <div class="row"><div class="t1"><span class="nm">Fork of AI模块</span><span class="meta"><span>2 次</span><span>08-27 10:21</span></span></div></div>
+    <div class="row"><div class="t1"><span class="nm">探索项目中AI相关功能</span><span class="meta"><span>1 次</span><span>08-29 13:20</span></span></div></div>
+    <div class="sec">今日逐时</div>
+    <div class="hours" id="hours"></div>
+    <div class="haxis"><span>0时</span><span>6时</span><span>12时</span><span>18时</span><span>23时</span></div>
+  </div>
+
+  <div class="pv">— 静态预览 · 样例数据 —</div>
+</div>
+<script>
+const h=[3,1,4,2,0,0,1,2,6,8,5,3,7,10,4,2,5,9,12,7,3,2,4,1],mx=Math.max(...h);
+document.getElementById("hours").innerHTML=
+  h.map((v,i)=>`<i style="height:${Math.round(v/mx*100)}%"${v===mx?' class="peak"':""}></i>`).join("");
+</script>
+</body></html>
