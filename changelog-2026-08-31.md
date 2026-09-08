@@ -93,3 +93,6 @@
 - 微调（用户拍板）：今日 TOKENS 切计费口径——缓存读×0.1（CACHE_BILL 常量，通用 1 折），总览+总量两卡与近 7 日柱状图同步（SQL 侧直接折算）。重建 exe。
 - 微调（用户）：全部 token 显示统一计费口径（缓存读×0.1）——按模型今日、输入输出卡的输入侧（输入+缓存×0.1）、--once CLI 输出同步；速度口径 talk_tok 保持原始（除生成窗口才是 t/s）。重建 exe。
 - v5 工具切换（token-speed-v5-plan.md）：详情窗头部新增工具下拉（ZCode/Codex），push_loop 每秒轮询下拉值切数据源（不加 js 桥），面板/详情/三页全局跟随。Codex 适配层：近 8 天 rollout JSONL → 与 zcode model_usage 同构的内存 sqlite（token_count 相邻差分=段用量、input 拆 cached 对齐口径、compacted→compact 标记行、会话标题=cwd 基名），全部现有查询/口径零改动复用；codex 无首字计时 → 平均首字卡显示 "-"；today_by_model 滤空模型。验证：self_check 假 rollout 单测 + 真实文件差分恒等式对账（每文件 output 和=末次累计，33463/38680/12691/11698 全对）+ 活窗 a11y 双向切换（Codex 空态正确、切回 ZCode 数据恢复）。exe 已重建。
+- 微调：①面板 running 中的模型即时显示「运行中…」（此前要等首条完成落库才出现，切换模型后看起来"很慢"）；②速度页头部新增「按模型/按会话」分类下拉（仅速度页可见），按会话行显示计费用量（_k 格式）；self_check 同步。重建 exe。
+- 修正：分类切换（按模型/按会话）属总量页而非速度页——速度页恢复双段原样；总量页头部「按模型/按会话」下拉控制今日分类块，按会话为今日各会话计费用量+占比条（新查询 today_sessions）；速度页按会话行仍显示计费用量。push_loop 轮询 tcat 值。self_check 同步。重建 exe。
+- 修正：分类切换（按模型/按会话）归总量页——速度页恢复双段原样；总量页「按会话 · 今日」为各会话计费用量+占比条（today_sessions 新查询），push_loop 轮询 tcat；self_check 同步。重建 exe。
