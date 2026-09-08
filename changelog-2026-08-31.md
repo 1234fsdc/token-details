@@ -96,3 +96,4 @@
 - 微调：①面板 running 中的模型即时显示「运行中…」（此前要等首条完成落库才出现，切换模型后看起来"很慢"）；②速度页头部新增「按模型/按会话」分类下拉（仅速度页可见），按会话行显示计费用量（_k 格式）；self_check 同步。重建 exe。
 - 修正：分类切换（按模型/按会话）属总量页而非速度页——速度页恢复双段原样；总量页头部「按模型/按会话」下拉控制今日分类块，按会话为今日各会话计费用量+占比条（新查询 today_sessions）；速度页按会话行仍显示计费用量。push_loop 轮询 tcat 值。self_check 同步。重建 exe。
 - 修正：分类切换（按模型/按会话）归总量页——速度页恢复双段原样；总量页「按会话 · 今日」为各会话计费用量+占比条（today_sessions 新查询），push_loop 轮询 tcat；self_check 同步。重建 exe。
+- 修复（用户：正在运行的模型面板不显示）：ZCode 回合结束才写 model_usage 且从不写 running 行——上一轮 running 补丁对 ZCode 无效。改用实时信号 live_model()：message 表流式落库（实测回合中每秒增长），取最新 assistant 消息的 modelID，未出现在面板列表即插「运行中…」行（复用 run:1 渲染）；codex 缓存库无 message 表返回 None。self_check 补断言。重建 exe。

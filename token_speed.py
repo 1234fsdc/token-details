@@ -362,6 +362,14 @@ def self_check():
         and rows[2][4] == 240000, rows[2]  # 首条无窗口=0，次条 60s→300s=240s
     cs = compact_stats(cdb)
     assert len(cs) == 1 and cs[0]["n"] == 1 and cs[0]["title"] == "proj_a", cs
+    # live_model：codex 缓存库无 message 表 → None；有表则取最新 assistant modelID
+    assert live_model(cdb) is None
+    cdb.execute("CREATE TABLE message (role TEXT, modelID TEXT, providerID TEXT,"
+                " time_created INTEGER)")
+    cdb.execute("INSERT INTO message VALUES ('user', NULL, NULL, 1)")
+    cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-live', 'p', 2)")
+    cdb.execute("INSERT INTO message VALUES ('user', NULL, NULL, 3)")
+    assert live_model(cdb) == {"model": "glm-live", "prov": "p"}
     print("self-check OK")
 
 
@@ -502,6 +510,19 @@ def compact_stats(db, days=3):
             for t, n, last, talk in rows if talk and talk >= cutoff]
 
 
+def live_model(db):
+    """正在生成的模型：最新 assistant message 的 modelID（ZCode 流式时实时落库，
+    model_usage 要等回合结束才写）。表不存在（codex 缓存库）返回 None。"""
+    try:
+        r = db.execute(
+            """SELECT modelID, providerID FROM message
+               WHERE role='assistant' AND modelID IS NOT NULL
+               ORDER BY time_created DESC LIMIT 1""").fetchone()
+    except sqlite3.Error:
+        return None
+    return {"model": r[0], "prov": r[1]} if r and r[0] else None
+
+
 def detail_data(db, provs, tool="zcode"):
     """面板 + 详情三页共用的一次取数（push_loop 每秒 / 详情打开 / 热更同源）。"""
     cutoff = time.time() * 1000 - 3 * 60 * 1000  # 3min 无活动不显示（终 9 定标）
@@ -515,15 +536,14 @@ def detail_data(db, provs, tool="zcode"):
         items.append({"model": agg["row"][2], "prov": c[2], "when": c[0],
                       "tps": f'{agg["tps"]:.1f}{agg["mark"]}',
                       "tpsV": round(agg["tps"]), "ttft": c[5], "tok": c[6]})
-    # running 中的模型立刻可见（无完成行也能显示），速度等首条落库
+    # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）
     seen = {i["model"] for i in items}
-    for r in rows:
-        if r[3] == "running" and r[2] not in seen and (r[4] or 0) >= cutoff:
-            c = fmt_cells(r, provs)
-            items.append({"model": r[2], "prov": c[2], "when": c[0],
-                          "tps": "…", "tpsV": 0, "ttft": c[5], "tok": c[6],
-                          "run": 1})
-            seen.add(r[2])
+    lm = live_model(db)
+    if lm and lm["model"] not in seen:
+        items.append({"model": lm["model"],
+                      "prov": (provs or {}).get(lm["prov"], lm["prov"][:8]),
+                      "when": "…", "tps": "…", "tpsV": 0, "ttft": "-",
+                      "tok": "-", "run": 1})
     return {"sum": today_summary(db), "sess": session_stats(db), "models": items,
             "bm": today_by_model(db, provs), "cmp": compact_stats(db),
             "days": week_daily(db), "tsess": today_sessions(db), "tool": tool}
