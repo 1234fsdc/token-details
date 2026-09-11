@@ -221,6 +221,8 @@ def calc(row):
     if status != "completed" or not done:
         return None
     tok = (out or 0) + (reason or 0)
+    if not tok:  # 供应商未回报 usage（如 Vyce 空行）→ 0 token 无速度可言
+        return None
     if ft and done > ft:
         ttft = (ft - started) / 1000.0 if started and ft >= started else None
         return tok * 1000.0 / (done - ft), ttft, ""
@@ -255,6 +257,7 @@ def self_check():
     assert abs(tps2 - 250) < 0.01 and ttft2 is None and mark2 == "*"
     assert calc(("x", "p", "m", "error", 1000, None, 3000, 100, 10, 0)) is None
     assert calc(("x", "p", "m", "completed", 1000, None, 3000, 0, 500, 0)) is None
+    assert calc(("x", "p", "m", "completed", 1000, 2000, 3000, 0, 0, 0)) is None  # 空 usage 不算速度
     # avg_by_model：同模型两条不同会话请求 → 合并加权平均（1000ms/500tok=500 + 2000ms/1000tok=500 → 1500ms/1500tok=500）
     now = 100000
     a = ("x", "p", "glm", "completed", now, now + 1000, now + 2000, 0, 500, 0)
@@ -362,13 +365,15 @@ def self_check():
         and rows[2][4] == 240000, rows[2]  # 首条无窗口=0，次条 60s→300s=240s
     cs = compact_stats(cdb)
     assert len(cs) == 1 and cs[0]["n"] == 1 and cs[0]["title"] == "proj_a", cs
-    # live_model：codex 缓存库无 message 表 → None；有表则取最新 assistant modelID
+    # live_model：旧消息超出窗口后不再标为运行中
     assert live_model(cdb) is None
     cdb.execute("CREATE TABLE message (role TEXT, modelID TEXT, providerID TEXT,"
                 " time_created INTEGER)")
-    cdb.execute("INSERT INTO message VALUES ('user', NULL, NULL, 1)")
-    cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-live', 'p', 2)")
-    cdb.execute("INSERT INTO message VALUES ('user', NULL, NULL, 3)")
+    now = int(time.time() * 1000)
+    cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-old', 'p', ?)",
+                (now - 4 * 60 * 1000,))
+    assert live_model(cdb) is None
+    cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-live', 'p', ?)", (now,))
     assert live_model(cdb) == {"model": "glm-live", "prov": "p"}
     print("self-check OK")
 
@@ -384,9 +389,9 @@ def print_once(db):
     print(f"— 今日: {s['n']} 次 · {billed:,.0f} tok · 均 {avg:.1f} t/s")
 
 
-def latest_by_model(rows, window_ms=3 * 60 * 1000):
+def latest_by_model(rows, window_ms=30 * 1000):
     """rows 已按时间新→旧，每模型取最新一条 → 每模型一行。
-    3 分钟无新完成回复 = 结束，行消失（用户定标 B）。"""
+    30 秒无新完成回复 = 结束，行消失（用户定标 B，2026-09-10 由 3min 改）。"""
     seen = {}
     cutoff = time.time() * 1000 - window_ms
     for row in rows:
@@ -398,21 +403,29 @@ def latest_by_model(rows, window_ms=3 * 60 * 1000):
 
 
 def avg_by_model(rows, per=5):
-    """每模型聚合最近 per 条有精确首字时间的请求：速度 = 总 tokens ÷ 总生成窗口。
-    缺 first_token_at 的请求直接舍弃（回退 duration 含排队会虚低），不再标 *。"""
+    """每模型聚合最近 per 条：速度 = 总 tokens ÷ 总生成窗口。
+    优先精确首字行；模型窗口内一条首字行都没有时回退 duration（含排队会虚低，
+    标 *）——否则整段消失（glm-5.3-flash 多数行缺 first_token_at）。"""
     by = {}
     for row in rows:
         c = calc(row)
-        if c and c[2] == "":  # 只要精确首字行
-            by.setdefault(row[2], []).append(row)
+        if c:
+            by.setdefault(row[2], []).append((row, c))
     out = []
     for model, lst in by.items():
-        recent = lst[:per]
-        tot_tok = sum((r[8] or 0) + (r[9] or 0) for r in recent)
-        gen_ms = sum(r[6] - r[5] for r in recent)
+        recent = [(r, c) for r, c in lst if c[2] == ""][:per]
+        mark = ""
+        if not recent:  # 无首字行 → duration 回退，速度偏低但不消失
+            recent = [(r, c) for r, c in lst if c[2] == "*"][:per]
+            mark = "*"
+        if not recent:
+            continue
+        tot_tok = sum((r[8] or 0) + (r[9] or 0) for r, _ in recent)
+        gen_ms = sum((r[6] - r[5]) if c[2] == "" else (r[7] or 0)
+                     for r, c in recent)
         if gen_ms > 0:
-            out.append({"row": recent[0], "tps": tot_tok * 1000.0 / gen_ms,
-                        "mark": ""})
+            out.append({"row": recent[0][0], "tps": tot_tok * 1000.0 / gen_ms,
+                        "mark": mark})
     return out
 
 
@@ -510,27 +523,51 @@ def compact_stats(db, days=3):
             for t, n, last, talk in rows if talk and talk >= cutoff]
 
 
-def live_model(db):
-    """正在生成的模型：最新 assistant message 的 modelID（ZCode 流式时实时落库，
-    model_usage 要等回合结束才写）。表不存在（codex 缓存库）返回 None。"""
+def live_model(db, window_ms=30 * 1000):
+    """返回窗口内最新 assistant 模型；旧消息不能伪装成运行中。"""
+    cutoff = int(time.time() * 1000) - window_ms
     try:
+        cols = {r[1] for r in db.execute("PRAGMA table_info(message)")}
+        if "data" in cols:
+            r = db.execute(
+                """SELECT data FROM message
+                   WHERE json_extract(data, '$.role')='assistant'
+                     AND time_created >= ?
+                   ORDER BY time_created DESC LIMIT 1""", (cutoff,)).fetchone()
+            if not r:
+                return None
+            msg = json.loads(r[0])
+            return {"model": msg.get("modelID"), "prov": msg.get("providerID")} \
+                if msg.get("modelID") else None
         r = db.execute(
             """SELECT modelID, providerID FROM message
-               WHERE role='assistant' AND modelID IS NOT NULL
-               ORDER BY time_created DESC LIMIT 1""").fetchone()
-    except sqlite3.Error:
+               WHERE role='assistant' AND modelID IS NOT NULL AND time_created >= ?
+               ORDER BY time_created DESC LIMIT 1""", (cutoff,)).fetchone()
+    except (sqlite3.Error, json.JSONDecodeError, TypeError):
         return None
     return {"model": r[0], "prov": r[1]} if r and r[0] else None
 
 
+def _last_act(db):
+    """model_id -> 最新 assistant 消息时间（生成中也算活动）。表缺失返回 {}。"""
+    try:
+        return dict(db.execute(
+            """SELECT json_extract(data,'$.modelID') AS mid, MAX(time_created)
+               FROM message WHERE json_extract(data,'$.role')='assistant'
+               GROUP BY mid""").fetchall())
+    except sqlite3.Error:
+        return {}
+
+
 def detail_data(db, provs, tool="zcode"):
     """面板 + 详情三页共用的一次取数（push_loop 每秒 / 详情打开 / 热更同源）。"""
-    cutoff = time.time() * 1000 - 3 * 60 * 1000  # 3min 无活动不显示（终 9 定标）
+    cutoff = time.time() * 1000 - 30 * 1000  # 30s 无活动不显示（用户 2026-09-10 改定）
+    last_act = _last_act(db)  # 按最后任何活动判活：长回合生成中行不消失，落库即显速度
     rows = fetch_recent(db, limit=TABLE_N)
     items = []
     for agg in avg_by_model(rows):
         r = agg["row"]
-        if (r[6] or r[4] or 0) < cutoff:
+        if max(r[6] or r[4] or 0, last_act.get(agg["row"][2]) or 0) < cutoff:
             continue
         c = fmt_cells(agg["row"], provs)  # 最新条提供 when/tok 等展示
         items.append({"model": agg["row"][2], "prov": c[2], "when": c[0],
@@ -727,8 +764,8 @@ box-shadow:0 0 0 3px rgba(255,77,46,.15)}}
 .stat{{flex:1;padding:14px 18px 13px;border-left:1px solid #e9e5da}}
 .stat:first-child{{padding-left:2px;border-left:none}}
 .k{{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:1.8px;margin-bottom:5px}}
-.stat .v{{font-family:var(--num);font-size:30px;font-weight:700;
-font-variant-numeric:tabular-nums;line-height:1}}
+.stat .v{{font-family:var(--num);font-size:20px;font-weight:700;
+font-variant-numeric:tabular-nums;line-height:1;white-space:nowrap}}
 .stat .v small{{font-size:11px;color:var(--muted);font-weight:400;font-family:"Segoe UI",sans-serif}}
 .sec{{margin:18px 2px 2px;font-size:9.5px;color:var(--muted);
 text-transform:uppercase;letter-spacing:1.8px}}
@@ -776,11 +813,12 @@ HTML = """<!doctype html><html><head><meta charset="utf-8">
 html{color-scheme:light}
 body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:var(--ink);
 background:#fffdf8;overflow:hidden;user-select:none;min-height:52px}
-#grip{position:absolute;top:5px;left:9px;color:#b3ac9a;font-size:10px;
+#grip{position:absolute;top:12px;left:8px;color:#b3ac9a;font-size:10px;
 letter-spacing:2px;cursor:pointer;line-height:1}
-#rows{padding:24px 16px 7px}
+#rows{padding:0 16px 7px}
+.row:first-child{padding-left:14px}
 .row{padding:10px 2px;border-bottom:1px solid var(--hair)}
-.row:last-child{border-bottom:none;padding-bottom:3px}
+.row:last-child{border-bottom:none;padding-bottom:10px}
 .l1{display:flex;align-items:baseline;gap:8px}
 .nm{font-size:12px;font-weight:600;letter-spacing:.1px;min-width:0;flex:0 1 auto;
 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -827,7 +865,8 @@ def run_web(db):
         _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
                     ("r", ctypes.c_long), ("b", ctypes.c_long)]
 
-    GRIP_W, GRIP_H = 42, 20  # 把手热区（CSS px，面板左上角）
+    # 把手热区（CSS px，首行模型左侧的 ⠿，与 HTML 里 #grip 位置对齐）
+    GRIP_X, GRIP_Y, GRIP_W, GRIP_H = 4, 8, 26, 26
 
     def hover_loop():
         # 三态：悬停把手区=解除穿透+可拖；面板其余=永久穿透。
@@ -842,8 +881,10 @@ def run_web(db):
                     u32.GetWindowRect(mh, ctypes.byref(rc))
                     dpi = u32.GetDpiForWindow(mh) or 96
                     inside = rc.l <= pt.x <= rc.r and rc.t <= pt.y <= rc.b
-                    in_grip = (inside and pt.x <= rc.l + round(GRIP_W * dpi / 96)
-                               and pt.y <= rc.t + round(GRIP_H * dpi / 96))
+                    gx = rc.l + round(GRIP_X * dpi / 96)
+                    gy = rc.t + round(GRIP_Y * dpi / 96)
+                    in_grip = (inside and gx <= pt.x <= gx + round(GRIP_W * dpi / 96)
+                               and gy <= pt.y <= gy + round(GRIP_H * dpi / 96))
                     ex = u32.GetWindowLongW(mh, -20) & 0xFFFFFFFF
                     # 简略面板不占任务栏：TOOLWINDOW 生效必须显式清 APPWINDOW，
                     # 否则两者并存时 APPWINDOW 强制显示任务栏按钮
@@ -905,7 +946,8 @@ def run_web(db):
                 if tcat:
                     cur_cat[0] = tcat
                 sdb = codex_db() if cur_tool[0] == "codex" else db
-                sprovs = {"codex": "Codex"} if cur_tool[0] == "codex" else provs
+                sprovs = ({"codex": "Codex"} if cur_tool[0] == "codex"
+                          else provider_names())  # 每秒重读：配置可能后于面板启动更新
                 D = detail_data(sdb, sprovs, cur_tool[0])  # 面板与详情三页同源
                 payload = json.dumps({"rows": D["models"]}, ensure_ascii=False)
                 w.evaluate_js(f"update({payload})")
