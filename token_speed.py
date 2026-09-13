@@ -180,11 +180,11 @@ def _parse_rollout(mdb, path):
                 prev_ts, prev_tot = ts, tot
     for kind, mdl, s2, start, ts, dlt in rows:
         if kind == "c":
-            mdb.execute("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            mdb.execute("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         ("", s2, "codex", "", "completed", ts, ts, ts, 0,
-                         0, 0, 0, 0, 0, "compact"))
+                         0, 0, 0, 0, 0, "compact", "interactive"))
         else:
-            mdb.execute("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            mdb.execute("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         ("", s2, "codex", mdl, "completed", start, start, ts,
                          max(0, ts - start),
                          dlt.get("output_tokens", 0),
@@ -192,7 +192,8 @@ def _parse_rollout(mdb, path):
                              - dlt.get("cached_input_tokens", 0)),
                          dlt.get("reasoning_output_tokens", 0),
                          dlt.get("cache_write_input_tokens", 0),
-                         dlt.get("cached_input_tokens", 0), "main_turn"))
+                         dlt.get("cached_input_tokens", 0), "main_turn",
+                         "interactive"))
 
 
 def codex_db():
@@ -217,7 +218,7 @@ def codex_db():
                 " completed_at INTEGER, duration_ms INTEGER, output_tokens INTEGER,"
                 " input_tokens INTEGER, reasoning_tokens INTEGER,"
                 " cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,"
-                " query_source TEXT)")
+                " query_source TEXT, task_type TEXT DEFAULT 'interactive')")
     mdb.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_archived INTEGER)")
     for p in sorted(files):
         try:
@@ -315,7 +316,7 @@ def self_check():
     mdb.execute("CREATE TABLE model_usage (id, session_id, provider_id, model_id, status,"
                 " started_at, first_token_at, completed_at, duration_ms, output_tokens,"
                 " input_tokens, reasoning_tokens, cache_creation_input_tokens,"
-                " cache_read_input_tokens, query_source)")
+                " cache_read_input_tokens, query_source, task_type TEXT DEFAULT 'interactive')")
     mdb.execute("CREATE TABLE session (id, title, time_archived)")
     now = int(time.time() * 1000)
     for rid, sid, ft, done, qs in (
@@ -340,6 +341,17 @@ def self_check():
     assert len(c) == 1 and c[0]["n"] == 2 and c[0]["title"] == "s", c
     mdb.execute("UPDATE session SET time_archived=? WHERE id='s'", (now,))
     assert compact_stats(mdb) == []  # 归档会话的压缩记录隐藏（还原即恢复）
+    # 子代理归并：全部 task_type='subagent_child' 合成一条"子代理"（不单独显示）
+    mdb.execute("INSERT INTO model_usage (id, session_id, provider_id, model_id, status,"
+                " started_at, completed_at, duration_ms, output_tokens, input_tokens,"
+                " reasoning_tokens, cache_creation_input_tokens, cache_read_input_tokens,"
+                " query_source, task_type)"
+                " VALUES ('f','s2','p','m','completed',?,?,-6000,50,0,0,0,0,"
+                " 'main_turn','subagent_child')", (now - 6000, now - 2000))
+    ts = today_sessions(mdb)
+    sub = [x for x in ts if x["title"] == "子代理"]
+    assert len(sub) == 1 and sub[0]["cnt"] == 1, ts
+    assert all(x["title"] != "s2" for x in ts)  # 子代理不单独成行
     # Codex 适配：fake rollout（token_count 累计差分 / input 去缓存 / compacted 标记）
     import tempfile
     from datetime import timedelta, timezone as _tz
@@ -368,7 +380,7 @@ def self_check():
                 " completed_at INTEGER, duration_ms INTEGER, output_tokens INTEGER,"
                 " input_tokens INTEGER, reasoning_tokens INTEGER,"
                 " cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,"
-                " query_source TEXT)")
+                " query_source TEXT, task_type TEXT DEFAULT 'interactive')")
     cdb.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_archived INTEGER)")
     _parse_rollout(cdb, tmp)
     os.remove(tmp)
@@ -486,7 +498,7 @@ def session_stats(db, limit=30, window_ms=30 * 60 * 1000):
                          AND u2.status='completed'
                    ORDER BY COALESCE(u2.completed_at, u2.started_at) DESC LIMIT 1)
            FROM model_usage u LEFT JOIN session s ON s.id = u.session_id
-           WHERE u.query_source!='compact'
+           WHERE u.query_source!='compact' AND u.task_type!='subagent_child'
            GROUP BY u.session_id
            HAVING MAX(COALESCE(u.completed_at, u.started_at)) >= ?
            ORDER BY 6 DESC LIMIT ?""", (CACHE_BILL, cutoff, limit)).fetchall()
@@ -724,15 +736,18 @@ def page_spd(D, mode="m"):
 
 
 def today_sessions(db, limit=20):
-    """今日按会话计费用量（含 compact），billed 降序。"""
+    """今日按会话计费用量（含 compact），billed 降序。
+    全部子代理（task_type='subagent_child'）归并为一条"子代理"（用户 2026-09-13 改定）。"""
     rows = db.execute(
-        """SELECT COALESCE(s.title, u.session_id), COUNT(*),
+        """SELECT CASE WHEN u.task_type='subagent_child' THEN '子代理'
+                       ELSE COALESCE(s.title, u.session_id) END,
+                  COUNT(*),
                   CAST(SUM(u.output_tokens+u.reasoning_tokens+u.input_tokens
                       +u.cache_creation_input_tokens
                       +u.cache_read_input_tokens*?) AS INT)
            FROM model_usage u LEFT JOIN session s ON s.id = u.session_id
            WHERE u.status='completed' AND u.completed_at >= ?
-           GROUP BY u.session_id ORDER BY 3 DESC LIMIT ?""",
+           GROUP BY 1 ORDER BY 3 DESC LIMIT ?""",
         (CACHE_BILL, _day0(), limit)).fetchall()
     return [{"title": ti, "cnt": c, "tok": t or 0} for ti, c, t in rows]
 
