@@ -301,15 +301,14 @@ def self_check():
     ov, spd, tok = page_ov(D), page_spd(D), page_tok(D)
     assert "今日 TOKENS" in tok and "今日请求" in tok
     assert "700万<small> / </small>1,500" in tok
-    assert "3 天活跃 2 次" in tok
+    assert "30 天内 2 次" in tok
     assert "class=peak" in tok and "0%'></i>" in tok  # 柱须闭合，否则嵌套成一个元素
     assert "近 7 日 token" in tok and "500万" in tok and "08-31" in tok  # 顶部数值+日期轴
-    tok_s = page_tok(D, "s")  # 按会话模式
-    assert "按会话 · 今日" in tok_s and "测2" in tok_s and "560万" in tok_s
-    assert "按模型" not in tok_s
-    assert "3 天内无活跃压缩会话" in page_tok({**D, "cmp": []})
+    tok = page_tok(D)
+    assert "按会话 · 今日" in tok and "按模型 · 今日" in tok and "测2" in tok and "560万" in tok
+    assert "30 天内无压缩会话" in page_tok({**D, "cmp": []})
     # compact 口径（内存库）：fetch_recent 排除 / today_summary 双轨 /
-    # compact_stats 只数 completed 且 3 天无对话的会话整行丢弃
+    # compact_stats 只统计 30 天内的压缩记录，超期会话整行丢弃
     mdb = sqlite3.connect(":memory:")
     mdb.execute("CREATE TABLE model_usage (id, session_id, provider_id, model_id, status,"
                 " started_at, first_token_at, completed_at, duration_ms, output_tokens,"
@@ -323,8 +322,8 @@ def self_check():
             ("c", "s", now - 1200, now - 1000, "compact"),
             ("d", "old", now - 4 * 86400 * 1000 - 1000,
              now - 4 * 86400 * 1000, "main_turn"),
-            ("e", "old", now - int(3.5 * 86400 * 1000) - 1000,
-             now - int(3.5 * 86400 * 1000), "compact")):
+            ("e", "old", now - int(31.5 * 86400 * 1000) - 1000,
+             now - int(31.5 * 86400 * 1000), "compact")):
         mdb.execute("INSERT INTO model_usage (id, session_id, provider_id, model_id,"
                     " status, started_at, first_token_at, completed_at, duration_ms,"
                     " output_tokens, input_tokens, reasoning_tokens,"
@@ -532,21 +531,17 @@ def week_daily(db, days=7):
     return out
 
 
-def compact_stats(db, days=3):
+def compact_stats(db, days=30):
     """按会话的压缩次数（query_source='compact' 且 completed）。
-    保留规则：会话 days 天内有新对话（非 compact 完成请求）才显示，超期整行丢弃；
-    次数为该会话全部完成压缩数。数据留在 ZCode 自家库，无自有存储。"""
+    只统计/显示最近 days 天内的压缩记录，超期不显示（用户 2026-09-13 改定）。"""
     cutoff = int((time.time() - days * 86400) * 1000)
     rows = db.execute(
-        """SELECT COALESCE(s.title, u.session_id), COUNT(*), MAX(u.completed_at),
-                  (SELECT MAX(COALESCE(u2.completed_at, u2.started_at)) FROM model_usage u2
-                   WHERE u2.session_id = u.session_id AND u2.query_source!='compact'
-                         AND u2.status='completed')
+        """SELECT COALESCE(s.title, u.session_id), COUNT(*), MAX(u.completed_at)
            FROM model_usage u LEFT JOIN session s ON s.id = u.session_id
            WHERE u.query_source='compact' AND u.status='completed'
-           GROUP BY u.session_id ORDER BY 3 DESC""").fetchall()
-    return [{"title": t, "n": n, "last": last}
-            for t, n, last, talk in rows if talk and talk >= cutoff]
+                 AND u.completed_at >= ?
+           GROUP BY u.session_id ORDER BY 3 DESC""", (cutoff,)).fetchall()
+    return [{"title": t, "n": n, "last": last} for t, n, last in rows]
 
 
 def live_model(db, window_ms=90 * 1000):
@@ -652,15 +647,26 @@ def _sess_row(s, full=True):
 
 
 def page_ov(D):
-    """总览页：今日三卡 + 活跃会话。"""
-    s, sess = D["sum"], D["sess"]
+    """总览页：今日三卡 + 活跃会话 + 每模型速度（与简略面板同源同窗口）。"""
+    s, sess, models = D["sum"], D["sess"], D["models"]
     avg = s["talk_tok"] * 1000.0 / s["talk_ms"] if s["talk_ms"] else 0.0
     body = "".join(_sess_row(x) for x in sess)
+    mbody = ""
+    for m in models:
+        cls = _sc(m["tpsV"])
+        w = min(100, round(m["tpsV"] / 120 * 100))
+        mbody += (f"<div class='row'><div class='t1'><span class='nm'>{html.escape(m['model'])}</span>"
+                  f"<span class='meta'><span>{html.escape(m['prov'])}</span>"
+                  f"<span>{m['when']}</span></span>"
+                  f"<span class='v {cls}'>{m['tps']}</span></div>"
+                  f"<div class='bar'><i class='{cls}' style='width:{w}%'></i></div></div>")
     return (_cards([("今日请求", f"{s['n']}<small> 次</small>"),
                     ("平均速度",
                      f"<span class='{_sc(avg)}'>{avg:.1f}</span><small> t/s</small>"),
                     ("今日 TOKENS",
                      _k(s["tok"] - int(s["cache"] * (1 - CACHE_BILL))))])
+            + "<div class='sec'>每模型速度 · 90 秒窗口</div>"
+            + (mbody or "<div class='empty'>90 秒内无活跃模型</div>")
             + "<div class='sec'>活跃会话 · 30 分钟窗口</div>"
             + (body or "<div class='empty'>30 分钟内无活动会话</div>"))
 
@@ -706,8 +712,8 @@ def today_sessions(db, limit=20):
     return [{"title": ti, "cnt": c, "tok": t or 0} for ti, c, t in rows]
 
 
-def page_tok(D, mode="m"):
-    """总量页：总量三卡 + 按（模型/会话）·今日 + 会话压缩 + 近 7 日。"""
+def page_tok(D):
+    """总量页：总量三卡 + 按模型 · 今日 + 按会话 · 今日 + 会话压缩 + 近 7 日。"""
     s, bm, cmp_, days, tsess = D["sum"], D["bm"], D["cmp"], D["days"], D["tsess"]
     mbody = "".join(
         f"<div class='row'><div class='t1'><span class='nm'>{html.escape(m['model'])}</span>"
@@ -716,18 +722,16 @@ def page_tok(D, mode="m"):
         f"<span>{m['pct']}%</span></span></div>"
         f"<div class='bar'><i class='share' style='width:{m['pct']}%'></i></div></div>"
         for m in bm)
-    if mode == "s":
-        first = ("<div class='sec'>按会话 · 今日</div>"
-                 + ("".join(
-                     f"<div class='row'><div class='t1'><span class='nm'>{html.escape(x['title'])}</span>"
-                     f"<span class='meta'><span>{x['cnt']} 次</span>"
-                     f"<span>{_k(x['tok'])} tok</span></span></div>"
-                     f"<div class='bar'><i class='share' style='width:{round(x['tok'] * 100 / max(sum(y['tok'] for y in tsess) or 1, 1))}%'></i></div></div>"
-                     for x in tsess)
-                    or "<div class='empty'>今日暂无数据</div>"))
-    else:
-        first = ("<div class='sec'>按模型 · 今日</div>"
-                 + (mbody or "<div class='empty'>今日暂无数据</div>"))
+    sbody = "".join(
+        f"<div class='row'><div class='t1'><span class='nm'>{html.escape(x['title'])}</span>"
+        f"<span class='meta'><span>{x['cnt']} 次</span>"
+        f"<span>{_k(x['tok'])} tok</span></span></div>"
+        f"<div class='bar'><i class='share' style='width:{round(x['tok'] * 100 / max(sum(y['tok'] for y in tsess) or 1, 1))}%'></i></div></div>"
+        for x in tsess)
+    first = ("<div class='sec'>按模型 · 今日</div>"
+             + (mbody or "<div class='empty'>今日暂无数据</div>")
+             + "<div class='sec'>按会话 · 今日</div>"
+             + (sbody or "<div class='empty'>今日暂无数据</div>"))
     cn = sum(c["n"] for c in cmp_)
     cbody = "".join(
         f"<div class='row'><div class='t1'><span class='nm'>{html.escape(c['title'])}</span>"
@@ -752,8 +756,8 @@ def page_tok(D, mode="m"):
                      f"{_k(s['inp'] + s['cache'] * CACHE_BILL)}<small> / </small>"
                      f"{_k(s['out'] + s['reason'])}")])
             + first
-            + f"<div class='sec'>会话压缩 · 3 天活跃 {cn} 次</div>"
-            + (cbody or "<div class='empty'>3 天内无活跃压缩会话</div>")
+            + f"<div class='sec'>会话压缩 · 30 天内 {cn} 次</div>"
+            + (cbody or "<div class='empty'>30 天内无压缩会话</div>")
             + dsec)
 
 
@@ -812,9 +816,8 @@ font-variant-numeric:tabular-nums;overflow:hidden;white-space:nowrap}}
 .empty{{color:var(--muted);text-align:center;padding:40px 0}}
 </style></head><body><div id="live">
 <div class="head"><select id="tool"><option value="zcode" selected>ZCode</option><option value="codex">Codex</option></select>
-<select onchange="for(var p of document.querySelectorAll('.page'))p.hidden=p.id!==this.value;document.getElementById('tcat').style.display=this.value==='pg-tok'?'':'none'">
+<select onchange="for(var p of document.querySelectorAll('.page'))p.hidden=p.id!==this.value">
 <option value="pg-ov" selected>总览</option><option value="pg-spd">速度</option><option value="pg-tok">总量</option></select>
-<select id="tcat" style="display:none"><option value="m" selected>按模型</option><option value="s">按会话</option></select>
 <span class="dot"></span><span class="d">{datetime.now().strftime('%m-%d')} · 实时刷新</span></div>
 <div class="page" id="pg-ov">{page_ov(D)}</div>
 <div class="page" id="pg-spd" hidden>{page_spd(D)}</div>
@@ -952,19 +955,6 @@ def run_web(db):
                         pass
                 if tool:
                     cur_tool[0] = tool
-                tcat = None
-                for dw in detail_win:
-                    try:
-                        if not dw.hidden:
-                            v = dw.evaluate_js(
-                                "var e=document.getElementById('tcat');e?e.value:''")
-                            if v:
-                                tcat = v
-                            break
-                    except Exception:
-                        pass
-                if tcat:
-                    cur_cat[0] = tcat
                 sdb = codex_db() if cur_tool[0] == "codex" else db
                 sprovs = ({"codex": "Codex"} if cur_tool[0] == "codex"
                           else provider_names())  # 每秒重读：配置可能后于面板启动更新
@@ -977,7 +967,7 @@ def run_web(db):
                 w.evaluate_js(f"update({payload})")
                 # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）
                 pages = json.dumps({"ov": page_ov(D), "spd": page_spd(D),
-                                    "tok": page_tok(D, cur_cat[0])},
+                                    "tok": page_tok(D)},
                                    ensure_ascii=False)
                 alive = []
                 for dw in detail_win:
@@ -1041,7 +1031,6 @@ def run_web(db):
     w.events.closing += lambda: (w.hide(), False)[1]  # × = 隐藏到托盘（False=阻止销毁）
     detail_win = []
     cur_tool = ["zcode"]  # 工具切换：详情窗下拉设置，面板全局跟随（push_loop 每秒轮询）
-    cur_cat = ["m"]  # 总量页分类：按模型 / 按会话
     # 热更新只在源码运行时可用：exe 打包后主脚本不落盘（__file__ 指向不存在路径）
     src_file = __file__ if os.path.exists(__file__) else None
     last_src = [os.path.getmtime(src_file) if src_file else 0]
