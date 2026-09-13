@@ -6,7 +6,11 @@ cd /d "%~dp0"
 rem 停掉运行中的旧 exe，避免 PyInstaller 写 dist 被文件锁拦住
 powershell -NoProfile -Command "Get-Process TokenDetails -ErrorAction SilentlyContinue | Stop-Process -Force"
 
-python -m PyInstaller --onefile --noconsole --icon token_speed.ico --add-data "token_speed.ico;." --name TokenDetails token_speed.py
+rem 优先用项目 venv（PATH 里的 python 可能指向失效的商店 stub）
+set "PY=python"
+if exist "%USERPROFILE%\.agent-reach-venv\Scripts\python.exe" set "PY=%USERPROFILE%\.agent-reach-venv\Scripts\python.exe"
+
+"%PY%" -m PyInstaller --onefile --noconsole --icon token_speed.ico --add-data "token_speed.ico;." --name TokenDetails token_speed.py
 if errorlevel 1 (
     echo BUILD FAILED
     exit /b 1
