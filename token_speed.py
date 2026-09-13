@@ -287,6 +287,8 @@ def self_check():
                    "ttft": 1.0, "rpm": 2.0, "model": "glm<b>"}],
          "models": [{"model": "m<b>", "prov": "p", "when": "10:00",
                      "tps": "500.0", "tpsV": 500, "ttft": "1.0s", "tok": "500+0"}],
+         "dmodels": [{"model": "m<b>", "prov": "p", "when": "10:00",
+                      "tps": "500.0", "tpsV": 500}],
          "bm": [{"model": "m", "prov": "p", "tok": 1500, "cnt": 3, "pct": 100}],
          "cmp": [{"title": "测", "n": 2, "last": 100000}],
          "tsess": [{"title": "测2", "cnt": 3, "tok": 5_600_000}],
@@ -297,7 +299,7 @@ def self_check():
     # 今日 TOKENS 计费口径：tok(1500) - cache(0)*0.9 = 1,500
     assert "1,500" in tok
     ov, spd, tok = page_ov(D), page_spd(D), page_tok(D)  # 速度页恒双段
-    assert "会话速度" in spd and "每模型速度" in spd
+    assert "会话速度" in spd and "每模型速度 · 今日" in spd
     ov, spd, tok = page_ov(D), page_spd(D), page_tok(D)
     assert "今日 TOKENS" in tok and "今日请求" in tok
     assert "700万<small> / </small>1,500" in tok
@@ -594,6 +596,17 @@ def detail_data(db, provs, tool="zcode"):
         items.append({"model": agg["row"][2], "prov": c[2], "when": c[0],
                       "tps": f'{agg["tps"]:.1f}{agg["mark"]}',
                       "tpsV": round(agg["tps"]), "ttft": c[5], "tok": c[6]})
+    # 详情页"每模型速度 · 今日"：一天内用过的全部模型，不受 90s 窗口限制（用户 2026-09-13 改定）
+    d0 = _day0()
+    ditems = []
+    for agg in avg_by_model(fetch_recent(db, limit=500)):
+        r = agg["row"]
+        if (r[6] or r[4] or 0) < d0:
+            continue
+        c = fmt_cells(r, provs)
+        ditems.append({"model": r[2], "prov": c[2], "when": c[0],
+                       "tps": f'{agg["tps"]:.1f}{agg["mark"]}',
+                       "tpsV": round(agg["tps"])})
     # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）
     seen = {i["model"] for i in items}
     lm = live_model(db)
@@ -603,6 +616,7 @@ def detail_data(db, provs, tool="zcode"):
                       "when": "…", "tps": "…", "tpsV": 0, "ttft": "-",
                       "tok": "-", "run": 1})
     return {"sum": today_summary(db), "sess": session_stats(db), "models": items,
+            "dmodels": ditems,
             "bm": today_by_model(db, provs), "cmp": compact_stats(db),
             "days": week_daily(db), "tsess": today_sessions(db), "tool": tool}
 
@@ -646,54 +660,51 @@ def _sess_row(s, full=True):
             f"<div class='bar'><i class='{cls}' style='width:{w}%'></i></div></div>")
 
 
-def page_ov(D):
-    """总览页：今日三卡 + 活跃会话 + 每模型速度（与简略面板同源同窗口）。"""
-    s, sess, models = D["sum"], D["sess"], D["models"]
-    avg = s["talk_tok"] * 1000.0 / s["talk_ms"] if s["talk_ms"] else 0.0
-    body = "".join(_sess_row(x) for x in sess)
-    mbody = ""
+def _model_rows(models):
+    """每模型速度行（详情页共用）：模型/供应商/时刻/速度 + 条宽。"""
+    out = ""
     for m in models:
         cls = _sc(m["tpsV"])
         w = min(100, round(m["tpsV"] / 120 * 100))
-        mbody += (f"<div class='row'><div class='t1'><span class='nm'>{html.escape(m['model'])}</span>"
-                  f"<span class='meta'><span>{html.escape(m['prov'])}</span>"
-                  f"<span>{m['when']}</span></span>"
-                  f"<span class='v {cls}'>{m['tps']}</span></div>"
-                  f"<div class='bar'><i class='{cls}' style='width:{w}%'></i></div></div>")
+        out += (f"<div class='row'><div class='t1'><span class='nm'>{html.escape(m['model'])}</span>"
+                f"<span class='meta'><span>{html.escape(m['prov'])}</span>"
+                f"<span>{m['when']}</span></span>"
+                f"<span class='v {cls}'>{m['tps']}</span></div>"
+                f"<div class='bar'><i class='{cls}' style='width:{w}%'></i></div></div>")
+    return out
+
+
+def page_ov(D):
+    """总览页：今日三卡 + 每模型速度（今日） + 活跃会话。"""
+    s, sess, models = D["sum"], D["sess"], D.get("dmodels") or D["models"]
+    avg = s["talk_tok"] * 1000.0 / s["talk_ms"] if s["talk_ms"] else 0.0
+    body = "".join(_sess_row(x) for x in sess)
     return (_cards([("今日请求", f"{s['n']}<small> 次</small>"),
                     ("平均速度",
                      f"<span class='{_sc(avg)}'>{avg:.1f}</span><small> t/s</small>"),
                     ("今日 TOKENS",
                      _k(s["tok"] - int(s["cache"] * (1 - CACHE_BILL))))])
-            + "<div class='sec'>每模型速度 · 90 秒窗口</div>"
-            + (mbody or "<div class='empty'>90 秒内无活跃模型</div>")
+            + "<div class='sec'>每模型速度 · 今日</div>"
+            + (_model_rows(models) or "<div class='empty'>今日暂无数据</div>")
             + "<div class='sec'>活跃会话 · 30 分钟窗口</div>"
             + (body or "<div class='empty'>30 分钟内无活动会话</div>"))
 
 
 def page_spd(D, mode="m"):
-    """速度页：速度三卡 + 每模型速度（复用面板 items）+ 会话速度。"""
-    s, sess, models = D["sum"], D["sess"], D["models"]
+    """速度页：速度三卡 + 每模型速度（今日） + 会话速度。"""
+    s, sess, models = D["sum"], D["sess"], D.get("dmodels") or D["models"]
     avg = s["talk_tok"] * 1000.0 / s["talk_ms"] if s["talk_ms"] else 0.0
     ttft_v = ("-" if D.get("tool") == "codex"  # codex 无首字计时
               else (f"{s['ttft']:.1f}<small> s</small>"
                     if s["ttft"] is not None else "-"))
-    body = ""
-    for m in models:
-        cls = _sc(m["tpsV"])
-        w = min(100, round(m["tpsV"] / 120 * 100))
-        body += (f"<div class='row'><div class='t1'><span class='nm'>{html.escape(m['model'])}</span>"
-                 f"<span class='meta'><span>{html.escape(m['prov'])}</span>"
-                 f"<span>{m['when']}</span></span>"
-                 f"<span class='v {cls}'>{m['tps']}</span></div>"
-                 f"<div class='bar'><i class='{cls}' style='width:{w}%'></i></div></div>")
+    body = _model_rows(models)
     sbody = "".join(_sess_row(x, full=False) for x in sess)
     return (_cards([("平均Token速度",
                      f"<span class='{_sc(avg)}'>{avg:.1f}</span><small> t/s</small>"),
                     ("平均请求速度", f"{s['rpm']:.1f}<small> 次/分</small>"),
                     ("平均首字速度", ttft_v)])
-            + "<div class='sec'>每模型速度 · 最近 5 条加权</div>"
-            + (body or "<div class='empty'>90 秒内无活跃模型</div>")
+            + "<div class='sec'>每模型速度 · 今日（最近 5 条加权）</div>"
+            + (body or "<div class='empty'>今日暂无数据</div>")
             + "<div class='sec'>会话速度 · 30 分钟窗口</div>"
             + (sbody or "<div class='empty'>30 分钟内无活动会话</div>"))
 
