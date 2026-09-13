@@ -164,7 +164,7 @@ def _parse_rollout(mdb, path):
                 title = os.path.basename((p.get("cwd") or "").rstrip("\\/")) \
                     or sid[:8] or "?"
                 if sid:
-                    mdb.execute("INSERT OR REPLACE INTO session VALUES (?,?)",
+                    mdb.execute("INSERT OR REPLACE INTO session (id, title) VALUES (?,?)",
                                 (sid, title))
             elif t == "turn_context":
                 model = p.get("model") or model or "?"
@@ -218,7 +218,7 @@ def codex_db():
                 " input_tokens INTEGER, reasoning_tokens INTEGER,"
                 " cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,"
                 " query_source TEXT)")
-    mdb.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT)")
+    mdb.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_archived INTEGER)")
     for p in sorted(files):
         try:
             _parse_rollout(mdb, p)
@@ -316,7 +316,7 @@ def self_check():
                 " started_at, first_token_at, completed_at, duration_ms, output_tokens,"
                 " input_tokens, reasoning_tokens, cache_creation_input_tokens,"
                 " cache_read_input_tokens, query_source)")
-    mdb.execute("CREATE TABLE session (id, title)")
+    mdb.execute("CREATE TABLE session (id, title, time_archived)")
     now = int(time.time() * 1000)
     for rid, sid, ft, done, qs in (
             ("a", "s", now - 4000, now - 1000, "main_turn"),
@@ -335,8 +335,11 @@ def self_check():
     assert [r[0] for r in fetch_recent(mdb)] == ["a", "d"]
     s = today_summary(mdb)
     assert s["n"] == 1 and s["tok"] == 300 and s["talk_tok"] == 100, s
+    mdb.execute("INSERT INTO session VALUES ('s', 's', NULL)")
     c = compact_stats(mdb)
     assert len(c) == 1 and c[0]["n"] == 2 and c[0]["title"] == "s", c
+    mdb.execute("UPDATE session SET time_archived=? WHERE id='s'", (now,))
+    assert compact_stats(mdb) == []  # 归档会话的压缩记录隐藏（还原即恢复）
     # Codex 适配：fake rollout（token_count 累计差分 / input 去缓存 / compacted 标记）
     import tempfile
     from datetime import timedelta, timezone as _tz
@@ -366,7 +369,7 @@ def self_check():
                 " input_tokens INTEGER, reasoning_tokens INTEGER,"
                 " cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,"
                 " query_source TEXT)")
-    cdb.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT)")
+    cdb.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_archived INTEGER)")
     _parse_rollout(cdb, tmp)
     os.remove(tmp)
     rows = cdb.execute("SELECT model_id, output_tokens, input_tokens,"
@@ -535,13 +538,14 @@ def week_daily(db, days=7):
 
 def compact_stats(db, days=30):
     """按会话的压缩次数（query_source='compact' 且 completed）。
-    只统计/显示最近 days 天内的压缩记录，超期不显示（用户 2026-09-13 改定）。"""
+    只统计/显示最近 days 天内的压缩记录，超期不显示（用户 2026-09-13 改定）。
+    已归档会话（session.time_archived 非空）不显示；还原（清空该列）后自动恢复。"""
     cutoff = int((time.time() - days * 86400) * 1000)
     rows = db.execute(
         """SELECT COALESCE(s.title, u.session_id), COUNT(*), MAX(u.completed_at)
            FROM model_usage u LEFT JOIN session s ON s.id = u.session_id
            WHERE u.query_source='compact' AND u.status='completed'
-                 AND u.completed_at >= ?
+                 AND u.completed_at >= ? AND s.time_archived IS NULL
            GROUP BY u.session_id ORDER BY 3 DESC""", (cutoff,)).fetchall()
     return [{"title": t, "n": n, "last": last} for t, n, last in rows]
 
