@@ -288,7 +288,7 @@ def self_check():
          "models": [{"model": "m<b>", "prov": "p", "when": "10:00",
                      "tps": "500.0", "tpsV": 500, "ttft": "1.0s", "tok": "500+0"}],
          "dmodels": [{"model": "m<b>", "prov": "p", "when": "10:00",
-                      "tps": "500.0", "tpsV": 500}],
+                      "tps": "500.0", "tpsV": 500, "cnt": 3, "rpm": 2.5}],
          "bm": [{"model": "m", "prov": "p", "tok": 1500, "cnt": 3, "pct": 100}],
          "cmp": [{"title": "测", "n": 2, "last": 100000}],
          "tsess": [{"title": "测2", "cnt": 3, "tok": 5_600_000}],
@@ -598,15 +598,24 @@ def detail_data(db, provs, tool="zcode"):
                       "tpsV": round(agg["tps"]), "ttft": c[5], "tok": c[6]})
     # 详情页"每模型速度 · 今日"：一天内用过的全部模型，不受 90s 窗口限制（用户 2026-09-13 改定）
     d0 = _day0()
+    # 每模型今日总请求次数与平均请求速度（次数÷活跃跨度，排除 compact，与速度口径一致）
+    stat = {m: (c, mn, mx) for m, c, mn, mx in db.execute(
+        """SELECT model_id, COUNT(*), MIN(COALESCE(completed_at, started_at)),
+                  MAX(COALESCE(completed_at, started_at)) FROM model_usage
+           WHERE status='completed' AND query_source!='compact'
+                 AND COALESCE(completed_at, started_at)>=? AND model_id!=''
+           GROUP BY model_id""", (d0,))}
     ditems = []
     for agg in avg_by_model(fetch_recent(db, limit=500)):
         r = agg["row"]
         if (r[6] or r[4] or 0) < d0:
             continue
         c = fmt_cells(r, provs)
+        cnt, mn, mx = stat.get(r[2], (0, None, None))
+        rpm = cnt * 60000.0 / (mx - mn) if cnt > 1 and mx and mx > mn else 0.0
         ditems.append({"model": r[2], "prov": c[2], "when": c[0],
                        "tps": f'{agg["tps"]:.1f}{agg["mark"]}',
-                       "tpsV": round(agg["tps"])})
+                       "tpsV": round(agg["tps"]), "cnt": cnt, "rpm": rpm})
     # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）
     seen = {i["model"] for i in items}
     lm = live_model(db)
@@ -668,6 +677,7 @@ def _model_rows(models):
         w = min(100, round(m["tpsV"] / 120 * 100))
         out += (f"<div class='row'><div class='t1'><span class='nm'>{html.escape(m['model'])}</span>"
                 f"<span class='meta'><span>{html.escape(m['prov'])}</span>"
+                f"<span>{m['cnt']} 次</span><span>{m['rpm']:.1f} 次/分</span>"
                 f"<span>{m['when']}</span></span>"
                 f"<span class='v {cls}'>{m['tps']}</span></div>"
                 f"<div class='bar'><i class='{cls}' style='width:{w}%'></i></div></div>")
