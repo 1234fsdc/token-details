@@ -11,5 +11,8 @@ if errorlevel 1 (
     echo BUILD FAILED
     exit /b 1
 )
+rem 构建指纹：排障时先看这个文件判断面板跑的是哪版
+for /f %%i in ('git rev-parse --short HEAD') do set "git_hash=%%i"
+echo %date% %time%  commit:%git_hash%>"%~dp0dist\build_info.txt"
 echo.
 echo OK: %~dp0dist\TokenDetails.exe

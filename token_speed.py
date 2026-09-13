@@ -11,7 +11,6 @@
 计划: token-speed-v4-plan.md
 """
 import ctypes
-import ctypes.wintypes as wintypes
 import html
 import os
 import json
@@ -28,7 +27,6 @@ COLS = ("id, provider_id, model_id, status, started_at, first_token_at, "
 TABLE_N = 50   # 表格行数
 CACHE_BILL = 0.1  # 缓存读按 1 折计费（供应商通用口径），ponytail: 若换供应商比例不同再提成配置
 CHART_N = 20   # 柱状图条数
-POLL_MS = 1000
 LOG = None  # --log-file PATH：内容变化时追加一帧，测试观察口
 TITLE = "Token Details"          # 主窗/托盘名（HTML <title> 必须与其一致，FindWindowW 锚点）
 DETAIL_TITLE = "Token Details 详情"
@@ -42,6 +40,20 @@ def errlog(tag, exc):
         with open(ERRLOG, "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now().strftime('%H:%M:%S')}] [{tag}] "
                     f"{type(exc).__name__}: {exc}\n")
+    except Exception:
+        pass
+
+
+TRACE = r"C:/Users/Public/panel_trace.log"
+
+
+def trace(text):
+    """面板行集合每次变化记一行快照——转瞬即逝的显示事后可查（超 1MB 清空）。"""
+    try:
+        if os.path.exists(TRACE) and os.path.getsize(TRACE) > 1_000_000:
+            open(TRACE, "w").close()
+        with open(TRACE, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%m-%d %H:%M:%S')}] {text}\n")
     except Exception:
         pass
 
@@ -138,33 +150,34 @@ def _parse_rollout(mdb, path):
     input 拆掉 cached 对齐 zcode 语义（input 不含缓存）。compacted→compact 标记行。"""
     sid, model, prev_ts, prev_tot = "", "", None, None
     rows = []
-    for line in open(path, encoding="utf-8"):
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue
-        t = d.get("type")
-        p = d.get("payload") or {}
-        ts = _iso_ms(d["timestamp"]) if d.get("timestamp") else None
-        if t == "session_meta":
-            sid = p.get("id") or ""
-            title = os.path.basename((p.get("cwd") or "").rstrip("\\/")) \
-                or sid[:8] or "?"
-            if sid:
-                mdb.execute("INSERT OR REPLACE INTO session VALUES (?,?)",
-                            (sid, title))
-        elif t == "turn_context":
-            model = p.get("model") or model or "?"
-        elif t == "compacted" and sid and ts:
-            rows.append(("c", "", sid, ts, ts, {}))
-        elif t == "event_msg" and p.get("type") == "token_count" and sid and ts:
-            tot = (p.get("info") or {}).get("total_token_usage") or {}
-            base = prev_tot or {k: 0 for k in tot}
-            dlt = {k: max(0, tot.get(k, 0) - base.get(k, 0)) for k in tot}
-            if any(dlt.values()):
-                start = prev_ts if prev_ts is not None else ts
-                rows.append(("m", model, sid, start, ts, dlt))
-            prev_ts, prev_tot = ts, tot
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            t = d.get("type")
+            p = d.get("payload") or {}
+            ts = _iso_ms(d["timestamp"]) if d.get("timestamp") else None
+            if t == "session_meta":
+                sid = p.get("id") or ""
+                title = os.path.basename((p.get("cwd") or "").rstrip("\\/")) \
+                    or sid[:8] or "?"
+                if sid:
+                    mdb.execute("INSERT OR REPLACE INTO session VALUES (?,?)",
+                                (sid, title))
+            elif t == "turn_context":
+                model = p.get("model") or model or "?"
+            elif t == "compacted" and sid and ts:
+                rows.append(("c", "", sid, ts, ts, {}))
+            elif t == "event_msg" and p.get("type") == "token_count" and sid and ts:
+                tot = (p.get("info") or {}).get("total_token_usage") or {}
+                base = prev_tot or {k: 0 for k in tot}
+                dlt = {k: max(0, tot.get(k, 0) - base.get(k, 0)) for k in tot}
+                if any(dlt.values()):
+                    start = prev_ts if prev_ts is not None else ts
+                    rows.append(("m", model, sid, start, ts, dlt))
+                prev_ts, prev_tot = ts, tot
     for kind, mdl, s2, start, ts, dlt in rows:
         if kind == "c":
             mdb.execute("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -375,6 +388,19 @@ def self_check():
     assert live_model(cdb) is None
     cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-live', 'p', ?)", (now,))
     assert live_model(cdb) == {"model": "glm-live", "prov": "p"}
+    # live_model/_last_act 的 data-JSON 模式（生产库真实结构）
+    jdb = sqlite3.connect(":memory:")
+    jdb.execute("CREATE TABLE message (time_created INTEGER, data TEXT)")
+    jdb.execute("INSERT INTO message VALUES (?, ?)",
+                (now - 200 * 1000,  # 超窗残行（窗口 90s）→ 不算运行中
+                 json.dumps({"role": "assistant", "modelID": "glm-old", "providerID": "p"})))
+    assert live_model(jdb) is None
+    jdb.execute("INSERT INTO message VALUES (?, ?)",  # 窗口内 → 运行中
+                (now, json.dumps({"role": "assistant", "modelID": "glm-live",
+                                  "providerID": "p"})))
+    assert live_model(jdb) == {"model": "glm-live", "prov": "p"}
+    assert _last_act(jdb) == {"glm-old": now - 200 * 1000, "glm-live": now}
+    assert _last_act(cdb) == {}  # 无 data 列 → 退回空
     print("self-check OK")
 
 
@@ -389,9 +415,9 @@ def print_once(db):
     print(f"— 今日: {s['n']} 次 · {billed:,.0f} tok · 均 {avg:.1f} t/s")
 
 
-def latest_by_model(rows, window_ms=30 * 1000):
+def latest_by_model(rows, window_ms=90 * 1000):
     """rows 已按时间新→旧，每模型取最新一条 → 每模型一行。
-    30 秒无新完成回复 = 结束，行消失（用户定标 B，2026-09-10 由 3min 改）。"""
+    90 秒无新完成回复 = 结束，行消失（用户定标，2026-09-11 由 30s 改，与面板同步）。"""
     seen = {}
     cutoff = time.time() * 1000 - window_ms
     for row in rows:
@@ -523,7 +549,7 @@ def compact_stats(db, days=3):
             for t, n, last, talk in rows if talk and talk >= cutoff]
 
 
-def live_model(db, window_ms=30 * 1000):
+def live_model(db, window_ms=90 * 1000):
     """返回窗口内最新 assistant 模型；旧消息不能伪装成运行中。"""
     cutoff = int(time.time() * 1000) - window_ms
     try:
@@ -561,7 +587,7 @@ def _last_act(db):
 
 def detail_data(db, provs, tool="zcode"):
     """面板 + 详情三页共用的一次取数（push_loop 每秒 / 详情打开 / 热更同源）。"""
-    cutoff = time.time() * 1000 - 30 * 1000  # 30s 无活动不显示（用户 2026-09-10 改定）
+    cutoff = time.time() * 1000 - 90 * 1000  # 90s 无活动不显示（用户 2026-09-11 改定）
     last_act = _last_act(db)  # 按最后任何活动判活：长回合生成中行不消失，落库即显速度
     rows = fetch_recent(db, limit=TABLE_N)
     items = []
@@ -661,7 +687,7 @@ def page_spd(D, mode="m"):
                     ("平均请求速度", f"{s['rpm']:.1f}<small> 次/分</small>"),
                     ("平均首字速度", ttft_v)])
             + "<div class='sec'>每模型速度 · 最近 5 条加权</div>"
-            + (body or "<div class='empty'>3 分钟内无活跃模型</div>")
+            + (body or "<div class='empty'>90 秒内无活跃模型</div>")
             + "<div class='sec'>会话速度 · 30 分钟窗口</div>"
             + (sbody or "<div class='empty'>30 分钟内无活动会话</div>"))
 
@@ -702,14 +728,6 @@ def page_tok(D, mode="m"):
     else:
         first = ("<div class='sec'>按模型 · 今日</div>"
                  + (mbody or "<div class='empty'>今日暂无数据</div>"))
-    cn = sum(c["n"] for c in cmp_)
-    mbody = "".join(
-        f"<div class='row'><div class='t1'><span class='nm'>{html.escape(m['model'])}</span>"
-        f"<span class='meta'><span>{html.escape(m['prov'])}</span>"
-        f"<span>{m['tok']:,} tok</span><span>{m['cnt']} 次</span>"
-        f"<span>{m['pct']}%</span></span></div>"
-        f"<div class='bar'><i class='share' style='width:{m['pct']}%'></i></div></div>"
-        for m in bm)
     cn = sum(c["n"] for c in cmp_)
     cbody = "".join(
         f"<div class='row'><div class='t1'><span class='nm'>{html.escape(c['title'])}</span>"
@@ -838,12 +856,13 @@ i.fast{background:var(--fast)}i.mid{background:var(--mid)}i.slow{background:var(
 <div id="rows"><div class="empty">连接数据中…</div></div>
 <script>
 function cls(v){return v>=80?"fast":(v>=50?"mid":"slow")}
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function update(d){
   var h="";
   for(const r of d.rows){
     var c=cls(r.tpsV), w=Math.min(100,Math.round(r.tpsV/120*100));
     var v=r.run?"<span style='color:#9a978c;font-size:12px;font-weight:400'>运行中…</span>":r.tps+"<small> t/s</small>";
-    h+=`<div class="row"><div class="l1"><span class="nm">${r.model}</span><span class="prov">${r.prov}</span><span class="v ${c}">${v}</span></div><div class="bar"><i class="${c}" style="width:${w}%"></i></div></div>`;
+    h+=`<div class="row"><div class="l1"><span class="nm">${esc(r.model)}</span><span class="prov">${esc(r.prov)}</span><span class="v ${c}">${v}</span></div><div class="bar"><i class="${c}" style="width:${w}%"></i></div></div>`;
   }
   document.getElementById("rows").innerHTML=h||'<div class="empty">暂无数据</div>';
 }
@@ -911,6 +930,7 @@ def run_web(db):
 
     def push_loop():
         # evaluate_js 推送（修线程后已验证 60s 稳定）；行数固定为启动时值
+        last_sig = [""]  # 上次推送的行签名，变化才写 trace
         time.sleep(1.5)
         while True:
             try:
@@ -949,6 +969,10 @@ def run_web(db):
                 sprovs = ({"codex": "Codex"} if cur_tool[0] == "codex"
                           else provider_names())  # 每秒重读：配置可能后于面板启动更新
                 D = detail_data(sdb, sprovs, cur_tool[0])  # 面板与详情三页同源
+                sig = str([(m["model"], m["prov"], m["tps"]) for m in D["models"]])
+                if sig != last_sig[0]:  # 行集合变了才记，转瞬即逝的显示可回查
+                    last_sig[0] = sig
+                    trace(sig)
                 payload = json.dumps({"rows": D["models"]}, ensure_ascii=False)
                 w.evaluate_js(f"update({payload})")
                 # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）
