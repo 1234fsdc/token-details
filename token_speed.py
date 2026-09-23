@@ -414,7 +414,7 @@ def self_check():
                 (now - 40 * 60 * 1000,))  # 超窗 → 不算运行中
     assert running_models(cdb) == []
     cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-live', 'p', ?)", (now,))
-    assert running_models(cdb) == [{"model": "glm-live", "prov": "p"}]
+    assert running_models(cdb) == [{"model": "glm-live", "prov": "p", "started": now}]
     # running_models/_last_act 的 data-JSON 模式（生产库真实结构）：
     # finish 为空/'started' 且 model_usage 无对应行 = 运行中；
     # usage 行在请求**结束**时落库（故 running 的行查不到 usage）。
@@ -428,7 +428,7 @@ def self_check():
     jdb.execute("INSERT INTO message VALUES (?, ?, ?, ?)",  # 未 finish 且无 usage → 运行中
                 ("msg_live", now, now, json.dumps({"role": "assistant", "modelID": "glm-live",
                                                    "providerID": "p"})))
-    assert running_models(jdb) == [{"model": "glm-live", "prov": "p"}]
+    assert running_models(jdb) == [{"model": "glm-live", "prov": "p", "started": now}]
     # 结束回合：finish 落定 + usage 行出现 → 立刻不再显示
     jdb.execute("UPDATE message SET time_updated=?, data=? WHERE id='msg_live'",
                 (now, json.dumps({"role": "assistant", "modelID": "glm-live",
@@ -621,11 +621,13 @@ def running_models(db, window_ms=30 * 60 * 1000):
     try:
         cols = {r[1] for r in db.execute("PRAGMA table_info(message)")}
         if "data" in cols:
+            # started=最早未结束请求的创建时刻（同模型并发时取最长在跑的请求）
             rows = db.execute(
                 """SELECT COALESCE(json_extract(m.data,'$.modelId'),
                                    json_extract(m.data,'$.modelID')) AS mid,
                           COALESCE(json_extract(m.data,'$.providerId'),
-                                   json_extract(m.data,'$.providerID')) AS pid
+                                   json_extract(m.data,'$.providerID')) AS pid,
+                          MIN(m.time_created) AS started
                    FROM message m
                    WHERE json_extract(m.data, '$.role')='assistant'
                      AND m.time_created >= ?
@@ -634,14 +636,16 @@ def running_models(db, window_ms=30 * 60 * 1000):
                      AND NOT EXISTS (SELECT 1 FROM model_usage u
                                      WHERE u.id LIKE '%' || m.id || '%')
                    GROUP BY mid, pid""", (cutoff,)).fetchall()
-            return [{"model": m, "prov": p or ""} for m, p in rows if m]
+            return [{"model": m, "prov": p or "", "started": st}
+                    for m, p, st in rows if m]
         rows = db.execute(
-            """SELECT DISTINCT modelID, providerID FROM message
-               WHERE role='assistant' AND modelID IS NOT NULL AND time_created >= ?""",
+            """SELECT modelID, providerID, MIN(time_created) FROM message
+               WHERE role='assistant' AND modelID IS NOT NULL AND time_created >= ?
+               GROUP BY modelID, providerID""",
             (cutoff,)).fetchall()  # 旧库无 data/finish 列：按最近活动近似
     except sqlite3.Error:
         return []
-    return [{"model": r[0], "prov": r[1] or ""} for r in rows if r[0]]
+    return [{"model": r[0], "prov": r[1] or "", "started": r[2]} for r in rows if r[0]]
 
 
 def _last_act(db):
@@ -683,8 +687,9 @@ def detail_data(db, provs, tool="zcode"):
            WHERE status='completed' AND query_source!='compact'
                  AND COALESCE(completed_at, started_at)>=? AND model_id!=''
            GROUP BY model_id""", (d0,))}
+    aggs500 = avg_by_model(fetch_recent(db, limit=500))
     ditems = []
-    for agg in avg_by_model(fetch_recent(db, limit=500)):
+    for agg in aggs500:
         r = agg["row"]
         if (r[6] or r[4] or 0) < d0:
             continue
@@ -694,17 +699,26 @@ def detail_data(db, provs, tool="zcode"):
         ditems.append({"model": r[2], "prov": c[2], "when": c[0],
                        "tps": f'{agg["tps"]:.1f}{agg["mark"]}',
                        "tpsV": round(agg["tps"]), "cnt": cnt, "rpm": rpm})
-    # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）；
-    # 并发多会话逐个显示，不止最新一个
-    seen = {i["model"] for i in items}
+    # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）。
+    # 用户 2026-09-23：运行中也要显示数字——面板上静止 = 看起来坏了。
+    # 生成期间没有任何实时 token 计数（实测 message/model_usage/日志均无），
+    # 故显示「≈最近5次均速」（标 ≈ 为参考值，回合结束即换成真实值）+ 已运行时长；
+    # 首次请求无历史可参考时只显示时长。运行中优先于刚完成的旧速度行。
+    hist = {a["row"][2]: a for a in aggs500}
+    runm = {}
     for lm in running_models(db):
-        if lm["model"] in seen:
-            continue
-        seen.add(lm["model"])
-        items.append({"model": lm["model"],
-                      "prov": (provs or {}).get(lm["prov"], (lm["prov"] or "?")[:8]),
-                      "when": "…", "tps": "…", "tpsV": 0, "ttft": "-",
-                      "tok": "-", "run": 1})
+        runm.setdefault(lm["model"], lm)  # 同模型并发取最早开始的请求
+    if runm:
+        items = [i for i in items if i["model"] not in runm]
+        now_ms = time.time() * 1000
+        for m, lm in runm.items():
+            a = hist.get(m)
+            run_s = max(0, int((now_ms - lm["started"]) / 1000)) if lm["started"] else 0
+            items.append({"model": m,
+                          "prov": (provs or {}).get(lm["prov"], (lm["prov"] or "?")[:8]),
+                          "when": "…", "tps": f'≈{a["tps"]:.1f}' if a else "…",
+                          "tpsV": round(a["tps"]) if a else 0, "ttft": "-",
+                          "tok": "-", "run": 1, "run_s": run_s})
     return {"sum": today_summary(db), "sess": session_stats(db), "models": items,
             "dmodels": ditems,
             "bm": today_by_model(db, provs), "cmp": compact_stats(db),
@@ -965,12 +979,16 @@ i.fast{background:var(--fast)}i.mid{background:var(--mid)}i.slow{background:var(
 <script>
 function cls(v){return v>=80?"fast":(v>=50?"mid":"slow")}
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function dur(s){return s<60?s+"s":Math.floor(s/60)+"m"+(s%60)+"s"}
 function update(d){
   var h="";
   for(const r of d.rows){
     var c=cls(r.tpsV), w=Math.min(100,Math.round(r.tpsV/120*100));
-    var v=r.run?"<span style='color:#9a978c;font-size:12px;font-weight:400'>运行中…</span>":r.tps+"<small> t/s</small>";
-    h+=`<div class="row"><div class="l1"><span class="nm">${esc(r.model)}</span><span class="prov">${esc(r.prov)}</span><span class="v ${c}">${v}</span></div><div class="bar"><i class="${c}" style="width:${w}%"></i></div></div>`;
+    // 运行中：数字给参考值（≈最近5次均速，首次请求无历史则空），供应商位标运行时长
+    var prov=esc(r.prov)+(r.run?" · 运行 "+dur(r.run_s||0):"");
+    var v=(r.run&&r.tpsV===0)?"<span style='color:#9a978c;font-size:12px;font-weight:400'>首次请求</span>"
+                            :r.tps+"<small> t/s</small>";
+    h+=`<div class="row"><div class="l1"><span class="nm">${esc(r.model)}</span><span class="prov">${prov}</span><span class="v ${c}">${v}</span></div><div class="bar"><i class="${c}" style="width:${w}%"></i></div></div>`;
   }
   document.getElementById("rows").innerHTML=h||'<div class="empty">暂无数据</div>';
 }
