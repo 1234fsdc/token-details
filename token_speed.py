@@ -26,6 +26,7 @@ COLS = ("id, provider_id, model_id, status, started_at, first_token_at, "
         "completed_at, duration_ms, output_tokens, reasoning_tokens")
 TABLE_N = 50   # 表格行数
 CACHE_BILL = 0.1  # 缓存读按 1 折计费（供应商通用口径），ponytail: 若换供应商比例不同再提成配置
+TOK_PER_CHAR = 0.6  # 字符→token 估算系数（2026-09-23 对回报正常的模型标定，0.3~1.6 的中位）
 CHART_N = 20   # 柱状图条数
 LOG = None  # --log-file PATH：内容变化时追加一帧，测试观察口
 TITLE = "Token Details"          # 主窗/托盘名（HTML <title> 必须与其一致，FindWindowW 锚点）
@@ -240,12 +241,55 @@ def codex_db():
     return mdb
 
 
-def calc(row):
-    """row -> (tps, ttft_s, mark)；mark='*' 表示回退 duration（含排队）。"""
+def _est_map(db, rows):
+    """无回报模型的 token 估算：usage行id -> 估算输出 token 数。
+    某些供应商 API 不回报输出 usage（如 Agnes：数百条记录 output 恒 0），
+    速度无法按精确值计算——用该请求 part 正文字符数 × TOK_PER_CHAR 折算。
+    数据驱动判定（不点名模型）：窗口内 ≥3 条完成行且输出回报合计 <20 tok
+    才算"无回报"，之后换供应商回报正常会自动回到精确值。
+    usage.id 内嵌 message.id（usage_model_<source>_<msgid>_<n>，2026-09 实测）；
+    part 表异常/无 msg id 时该模型自然退回无估算，不报错。"""
+    stat = {}  # model -> [完成数, 输出回报合计]
+    for r in rows:
+        if r[3] == "completed":
+            s = stat.setdefault(r[2], [0, 0])
+            s[0] += 1
+            s[1] += (r[8] or 0) + (r[9] or 0)
+    silent = {m for m, (n, tot) in stat.items() if n >= 3 and tot < 20}
+    if not silent:
+        return {}
+    mid_of = {}  # usage_id -> message_id
+    for r in rows:
+        if r[2] in silent and r[0]:
+            i = r[0].find("msg_")
+            if i >= 0:
+                mid_of[r[0]] = r[0][i:].rsplit("_", 1)[0]
+    try:
+        c2t = {}
+        mids = sorted(set(mid_of.values()))
+        for j in range(0, len(mids), 400):  # IN 子句分批
+            chunk = mids[j:j + 400]
+            c2t.update(db.execute(
+                "SELECT p.message_id, CAST(COALESCE(SUM("
+                "LENGTH(COALESCE(json_extract(p.data,'$.text'),''))"
+                "+LENGTH(COALESCE(json_extract(p.data,'$.state.input'),''))"
+                "),0)*? AS INT) FROM part p WHERE p.message_id IN (%s)"
+                " GROUP BY 1" % ",".join("?" * len(chunk)),
+                (TOK_PER_CHAR, *chunk)).fetchall())
+    except sqlite3.Error:
+        return {}  # part 表缺失（codex 内存库等）→ 无估算
+    return {uid: c2t[mid] for uid, mid in mid_of.items() if c2t.get(mid)}
+
+
+def calc(row, est=None):
+    """row -> (tps, ttft_s, mark)；mark='*' 表示回退 duration（含排队）。
+    est：无回报模型的估算 token 表（见 _est_map），真实回报恒 0 时替代。"""
     (_id, _prov, _model, status, started, ft, done, dur, out, reason) = row
     if status != "completed" or not done:
         return None
     tok = (out or 0) + (reason or 0)
+    if status == "completed" and not tok and est:
+        tok = est.get(_id, 0)
     if not tok:  # 供应商未回报 usage（如 Vyce 空行）→ 0 token 无速度可言
         return None
     if ft and done > ft:
@@ -283,6 +327,42 @@ def self_check():
     assert calc(("x", "p", "m", "error", 1000, None, 3000, 100, 10, 0)) is None
     assert calc(("x", "p", "m", "completed", 1000, None, 3000, 0, 500, 0)) is None
     assert calc(("x", "p", "m", "completed", 1000, 2000, 3000, 0, 0, 0)) is None  # 空 usage 不算速度
+    # 无回报模型估算（Agnes 类供应商）：完成行 output 恒 0 → part 正文字符×TOK_PER_CHAR
+    sdb = sqlite3.connect(":memory:")
+    sdb.execute("CREATE TABLE model_usage (id, session_id, provider_id, model_id, status,"
+                " started_at, first_token_at, completed_at, duration_ms, output_tokens,"
+                " input_tokens, reasoning_tokens, cache_creation_input_tokens,"
+                " cache_read_input_tokens, query_source)")
+    sdb.execute("CREATE TABLE part (message_id TEXT, data TEXT)")
+    for i in range(4):  # 无回报模型：4 条完成行 output=0，正文各 100 字符 → 估算 60 tok/条
+        sdb.execute("INSERT INTO model_usage (id, session_id, provider_id, model_id, status,"
+                    " started_at, first_token_at, completed_at, output_tokens,"
+                    " reasoning_tokens, query_source)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (f"usage_model_main_turn_msg_s{i}_0", "s", "p", "silent", "completed",
+                     1000 + i * 5000, 2000 + i * 5000, 3000 + i * 5000,
+                     0, 0, "main_turn"))
+        sdb.execute("INSERT INTO part VALUES (?, ?)",
+                    (f"msg_s{i}", json.dumps({"text": "x" * 100})))
+    sdb.execute("INSERT INTO model_usage (id, session_id, provider_id, model_id, status,"  # 有回报模型
+                " started_at, first_token_at, completed_at, output_tokens,"
+                " reasoning_tokens, query_source) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                ("usage_model_main_turn_msg_r0_0", "s", "p", "reported", "completed",
+                 1000, 2000, 3000, 50, 0, "main_turn"))
+    srows = sdb.execute(
+        "SELECT id, provider_id, model_id, status, started_at, first_token_at,"
+        " completed_at, duration_ms, output_tokens, reasoning_tokens FROM model_usage"
+        ).fetchall()
+    est = _est_map(sdb, srows)
+    assert est and all(v == 60 for v in est.values()) and len(est) == 4, est
+    assert "usage_model_main_turn_msg_r0_0" not in est  # 有回报模型不估算
+    tps_e, ttft_e, mark_e = calc(srows[0], est)  # 60 tok / (3000-2000)ms = 60 t/s
+    assert abs(tps_e - 60) < 0.01 and abs(ttft_e - 1.0) < 0.01 and mark_e == ""
+    sa = [x for x in avg_by_model(srows, est=est) if x["row"][2] == "silent"]
+    assert len(sa) == 1 and abs(sa[0]["tps"] - 60) < 0.01 and sa[0]["mark"] == "", sa
+    assert calc(srows[0]) is None  # 不传 est → 依旧无速度（原行为不变）
+    sdb.execute("DROP TABLE part")
+    assert _est_map(sdb, srows) == {}  # part 表缺失 → 退回无估算
     # avg_by_model：同模型两条不同会话请求 → 合并加权平均（1000ms/500tok=500 + 2000ms/1000tok=500 → 1500ms/1500tok=500）
     now = 100000
     a = ("x", "p", "glm", "completed", now, now + 1000, now + 2000, 0, 500, 0)
@@ -492,13 +572,14 @@ def latest_by_model(rows, window_ms=90 * 1000):
     return list(seen.values())
 
 
-def avg_by_model(rows, per=5):
+def avg_by_model(rows, per=5, est=None):
     """每模型聚合最近 per 条：速度 = 总 tokens ÷ 总生成窗口。
     优先精确首字行；模型窗口内一条首字行都没有时回退 duration（含排队会虚低，
-    标 *）——否则整段消失（glm-5.3-flash 多数行缺 first_token_at）。"""
+    标 *）——否则整段消失（glm-5.3-flash 多数行缺 first_token_at）。
+    est：无回报模型的估算 token 表，真实回报恒 0 的行用估算值参与计算。"""
     by = {}
     for row in rows:
-        c = calc(row)
+        c = calc(row, est)
         if c:
             by.setdefault(row[2], []).append((row, c))
     out = []
@@ -510,7 +591,8 @@ def avg_by_model(rows, per=5):
             mark = "*"
         if not recent:
             continue
-        tot_tok = sum((r[8] or 0) + (r[9] or 0) for r, _ in recent)
+        tot_tok = sum((r[8] or 0) + (r[9] or 0) or (est or {}).get(r[0], 0)
+                      for r, _ in recent)
         gen_ms = sum((r[6] - r[5]) if c[2] == "" else (r[7] or 0)
                      for r, c in recent)
         if gen_ms > 0:
@@ -669,8 +751,10 @@ def detail_data(db, provs, tool="zcode"):
     cutoff = time.time() * 1000 - 90 * 1000  # 90s 无活动不显示（用户 2026-09-11 改定）
     last_act = _last_act(db)  # 按最后任何活动判活：长回合生成中行不消失，落库即显速度
     rows = fetch_recent(db, limit=TABLE_N)
+    rows500 = fetch_recent(db, limit=500)
+    est = _est_map(db, rows500)  # 无回报模型（如 Agnes）按 part 字符估算 token
     items = []
-    for agg in avg_by_model(rows):
+    for agg in avg_by_model(rows, est=est):
         r = agg["row"]
         if max(r[6] or r[4] or 0, last_act.get(agg["row"][2]) or 0) < cutoff:
             continue
@@ -687,7 +771,7 @@ def detail_data(db, provs, tool="zcode"):
            WHERE status='completed' AND query_source!='compact'
                  AND COALESCE(completed_at, started_at)>=? AND model_id!=''
            GROUP BY model_id""", (d0,))}
-    aggs500 = avg_by_model(fetch_recent(db, limit=500))
+    aggs500 = avg_by_model(rows500, est=est)
     ditems = []
     for agg in aggs500:
         r = agg["row"]
