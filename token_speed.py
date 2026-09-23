@@ -405,45 +405,62 @@ def self_check():
         and rows[2][4] == 240000, rows[2]  # 首条无窗口=0，次条 60s→300s=240s
     cs = compact_stats(cdb)
     assert len(cs) == 1 and cs[0]["n"] == 1 and cs[0]["title"] == "proj_a", cs
-    # running_models：旧消息超出窗口后不再标为运行中
+    # running_models 旧库分支（无 data/finish 列）：按最近活动近似，30 分钟窗口
     assert running_models(cdb) == []
     cdb.execute("CREATE TABLE message (role TEXT, modelID TEXT, providerID TEXT,"
                 " time_created INTEGER)")
     now = int(time.time() * 1000)
     cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-old', 'p', ?)",
-                (now - 4 * 60 * 1000,))
+                (now - 40 * 60 * 1000,))  # 超窗 → 不算运行中
     assert running_models(cdb) == []
     cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-live', 'p', ?)", (now,))
     assert running_models(cdb) == [{"model": "glm-live", "prov": "p"}]
     # running_models/_last_act 的 data-JSON 模式（生产库真实结构）：
-    # finish 为空 = 仍在生成；finish=stop/tool-calls = 已结束；活跃看 time_updated
+    # finish 为空/'started' 且 model_usage 无对应行 = 运行中；
+    # usage 行在请求**结束**时落库（故 running 的行查不到 usage）。
     jdb = sqlite3.connect(":memory:")
-    jdb.execute("CREATE TABLE message (time_created INTEGER, time_updated INTEGER, data TEXT)")
-    jdb.execute("INSERT INTO message VALUES (?, ?, ?)",  # 超窗残行 → 不算运行中
-                (now - 200 * 1000, now - 200 * 1000,
+    jdb.execute("CREATE TABLE message (id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)")
+    jdb.execute("CREATE TABLE model_usage (id TEXT)")
+    jdb.execute("INSERT INTO message VALUES (?, ?, ?, ?)",  # 超窗残行 → 不算运行中
+                ("msg_old", now - 40 * 60 * 1000, now - 40 * 60 * 1000,
                  json.dumps({"role": "assistant", "modelID": "glm-old", "providerID": "p"})))
     assert running_models(jdb) == []
-    jdb.execute("INSERT INTO message VALUES (?, ?, ?)",  # 窗口内且未 finish → 运行中
-                (now, now, json.dumps({"role": "assistant", "modelID": "glm-live",
-                                       "providerID": "p"})))
+    jdb.execute("INSERT INTO message VALUES (?, ?, ?, ?)",  # 未 finish 且无 usage → 运行中
+                ("msg_live", now, now, json.dumps({"role": "assistant", "modelID": "glm-live",
+                                                   "providerID": "p"})))
     assert running_models(jdb) == [{"model": "glm-live", "prov": "p"}]
-    assert sorted(_last_act(jdb).items()) == [("glm-live", now), ("glm-old", now - 200 * 1000)]
+    # 结束回合：finish 落定 + usage 行出现 → 立刻不再显示
+    jdb.execute("UPDATE message SET time_updated=?, data=? WHERE id='msg_live'",
+                (now, json.dumps({"role": "assistant", "modelID": "glm-live",
+                                  "providerID": "p", "finish": "stop"})))
+    jdb.execute("INSERT INTO model_usage VALUES (?)",
+                ("usage_model_main_turn_msg_live_0",))
+    assert running_models(jdb) == []
+    assert sorted(_last_act(jdb).items()) == [("glm-live", now), ("glm-old", now - 40 * 60 * 1000)]
     # 新键名（2026-09 ZCode 起落库为 modelId/providerId）
     jdb2 = sqlite3.connect(":memory:")
-    jdb2.execute("CREATE TABLE message (time_created INTEGER, time_updated INTEGER, data TEXT)")
-    jdb2.execute("INSERT INTO message VALUES (?, ?, ?)",  # 已 finish → 不算运行中
-                 (now - 1000, now, json.dumps({"role": "assistant", "modelId": "nex-done",
-                                               "providerId": "p", "finish": "stop"})))
-    jdb2.execute("INSERT INTO message VALUES (?, ?, ?)",  # 流式中 → 运行中
-                 (now, now, json.dumps({"role": "assistant", "modelId": "nex-live",
-                                        "providerId": "p", "finish": None})))
-    jdb2.execute("INSERT INTO message VALUES (?, ?, ?)",  # 并发第二会话也在生成
-                 (now, now, json.dumps({"role": "assistant", "modelId": "qwen-live",
-                                        "providerId": "p2", "finish": "started"})))
+    jdb2.execute("CREATE TABLE message (id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)")
+    jdb2.execute("CREATE TABLE model_usage (id TEXT)")
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?, ?)",  # 已 finish + 有 usage → 不算
+                 ("msg_done", now - 1000, now, json.dumps({"role": "assistant",
+                   "modelId": "nex-done", "providerId": "p", "finish": "stop"})))
+    jdb2.execute("INSERT INTO model_usage VALUES (?)", ("usage_model_main_turn_msg_done_0",))
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?, ?)",  # 流式中 → 运行中
+                 ("msg_l1", now, now, json.dumps({"role": "assistant", "modelId": "nex-live",
+                                                  "providerId": "p", "finish": None})))
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?, ?)",  # 并发第二会话也在生成
+                 ("msg_l2", now, now, json.dumps({"role": "assistant", "modelId": "qwen-live",
+                                                  "providerId": "p2", "finish": "started"})))
+    assert sorted(r["model"] for r in running_models(jdb2)) == ["nex-live", "qwen-live"]
+    # 僵尸行：finish=NULL 且无 usage 但 30 分钟前创建 → 不再显示
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?, ?)",
+                 ("msg_zombie", now - 31 * 60 * 1000, now - 31 * 60 * 1000,
+                  json.dumps({"role": "assistant", "modelId": "zombie",
+                              "providerId": "p", "finish": None})))
     assert sorted(r["model"] for r in running_models(jdb2)) == ["nex-live", "qwen-live"]
     # 长回合：created 超窗但仍在更新 → _last_act 判活（90s 窗口不过期）
-    jdb2.execute("INSERT INTO message VALUES (?, ?, ?)",
-                 (now - 300 * 1000, now - 5 * 1000,
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?, ?)",
+                 ("msg_lt", now - 300 * 1000, now - 5 * 1000,
                   json.dumps({"role": "assistant", "modelId": "long-turn",
                               "providerId": "p", "finish": "tool-calls"})))
     assert _last_act(jdb2)["long-turn"] == now - 5 * 1000
@@ -593,26 +610,29 @@ def compact_stats(db, days=30):
     return [{"title": t, "n": n, "last": last} for t, n, last in rows]
 
 
-def running_models(db, window_ms=90 * 1000):
-    """所有正在生成的模型（并发会话逐个返回，不止最新一条）。
-    判据：assistant 消息 finish 为空或 'started' = 流未结束仍在生成；
-    完成后 finish 落定为 stop/tool-calls/completed 等。
-    活跃看 time_updated（流式期间会刷新），旧消息不能伪装成运行中。"""
+def running_models(db, window_ms=30 * 60 * 1000):
+    """所有正在运行的模型（并发会话逐个返回，不止最新一条）。
+    判据：assistant 消息 finish 为空/'started'，且 model_usage 里没有对应行——
+    usage 行在一次模型请求**结束**时才落库（completed/error/cancelled 都有），
+    运行期间（思考/生成/工具间隙）查不到行。长思考回合不受 90s 窗口限制。
+    30 分钟仍无 usage 行视为崩溃遗留僵尸行（实测单次请求最长 5.5 分钟），
+    不显示"运行中"。旧键名 modelID/providerID 与新键名 modelId/providerId 都认。"""
     cutoff = int(time.time() * 1000) - window_ms
     try:
         cols = {r[1] for r in db.execute("PRAGMA table_info(message)")}
         if "data" in cols:
-            # ZCode 落库键名 modelID/providerID → modelId/providerId，两种都认
             rows = db.execute(
-                """SELECT COALESCE(json_extract(data,'$.modelId'),
-                                   json_extract(data,'$.modelID')) AS mid,
-                          COALESCE(json_extract(data,'$.providerId'),
-                                   json_extract(data,'$.providerID')) AS pid
-                   FROM message
-                   WHERE json_extract(data, '$.role')='assistant'
-                     AND time_updated >= ?
-                     AND (json_extract(data,'$.finish') IS NULL
-                          OR json_extract(data,'$.finish')='started')
+                """SELECT COALESCE(json_extract(m.data,'$.modelId'),
+                                   json_extract(m.data,'$.modelID')) AS mid,
+                          COALESCE(json_extract(m.data,'$.providerId'),
+                                   json_extract(m.data,'$.providerID')) AS pid
+                   FROM message m
+                   WHERE json_extract(m.data, '$.role')='assistant'
+                     AND m.time_created >= ?
+                     AND (json_extract(m.data,'$.finish') IS NULL
+                          OR json_extract(m.data,'$.finish')='started')
+                     AND NOT EXISTS (SELECT 1 FROM model_usage u
+                                     WHERE u.id LIKE '%' || m.id || '%')
                    GROUP BY mid, pid""", (cutoff,)).fetchall()
             return [{"model": m, "prov": p or ""} for m, p in rows if m]
         rows = db.execute(
