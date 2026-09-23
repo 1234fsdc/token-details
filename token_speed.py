@@ -118,14 +118,25 @@ def today_summary(db):
 
 
 def provider_names():
-    """provider_id -> 可读名，启动时读一次。名称分散在 cli 和 v2 两份 config。"""
+    """provider_id -> 可读名。cli config.json（providers 字典）+
+    v2 provider_config.json（providerRules 列表，2026-09 ZCode 起新落点）。"""
     names = {}
-    for path in (CFG, _home + "/.zcode/v2/config.json"):
+    cfg_paths = (CFG, _home + "/.zcode/v2/provider_config.json")
+    for path in cfg_paths:
         try:
             with open(path, encoding="utf-8") as f:
                 cfg = json.load(f)
         except Exception:
             continue
+        # 新结构：{config:{providerConfigRules:{providerRules:[{providerId,providerName}]}}}
+        rules = (((cfg.get("config") or {}).get("providerConfigRules") or {})
+                 .get("providerRules"))
+        if isinstance(rules, list):
+            for r in rules:
+                if isinstance(r, dict) and r.get("providerName"):
+                    names[r["providerId"]] = r["providerName"]
+            continue
+        # 旧结构：{providers: {id: {name}}}（可能直接是列表）
         provs = cfg.get("providers") or cfg.get("provider") or {}
         if isinstance(provs, list):
             provs = {p.get("id", "?"): p for p in provs if isinstance(p, dict)}
@@ -394,28 +405,48 @@ def self_check():
         and rows[2][4] == 240000, rows[2]  # 首条无窗口=0，次条 60s→300s=240s
     cs = compact_stats(cdb)
     assert len(cs) == 1 and cs[0]["n"] == 1 and cs[0]["title"] == "proj_a", cs
-    # live_model：旧消息超出窗口后不再标为运行中
-    assert live_model(cdb) is None
+    # running_models：旧消息超出窗口后不再标为运行中
+    assert running_models(cdb) == []
     cdb.execute("CREATE TABLE message (role TEXT, modelID TEXT, providerID TEXT,"
                 " time_created INTEGER)")
     now = int(time.time() * 1000)
     cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-old', 'p', ?)",
                 (now - 4 * 60 * 1000,))
-    assert live_model(cdb) is None
+    assert running_models(cdb) == []
     cdb.execute("INSERT INTO message VALUES ('assistant', 'glm-live', 'p', ?)", (now,))
-    assert live_model(cdb) == {"model": "glm-live", "prov": "p"}
-    # live_model/_last_act 的 data-JSON 模式（生产库真实结构）
+    assert running_models(cdb) == [{"model": "glm-live", "prov": "p"}]
+    # running_models/_last_act 的 data-JSON 模式（生产库真实结构）：
+    # finish 为空 = 仍在生成；finish=stop/tool-calls = 已结束；活跃看 time_updated
     jdb = sqlite3.connect(":memory:")
-    jdb.execute("CREATE TABLE message (time_created INTEGER, data TEXT)")
-    jdb.execute("INSERT INTO message VALUES (?, ?)",
-                (now - 200 * 1000,  # 超窗残行（窗口 90s）→ 不算运行中
+    jdb.execute("CREATE TABLE message (time_created INTEGER, time_updated INTEGER, data TEXT)")
+    jdb.execute("INSERT INTO message VALUES (?, ?, ?)",  # 超窗残行 → 不算运行中
+                (now - 200 * 1000, now - 200 * 1000,
                  json.dumps({"role": "assistant", "modelID": "glm-old", "providerID": "p"})))
-    assert live_model(jdb) is None
-    jdb.execute("INSERT INTO message VALUES (?, ?)",  # 窗口内 → 运行中
-                (now, json.dumps({"role": "assistant", "modelID": "glm-live",
-                                  "providerID": "p"})))
-    assert live_model(jdb) == {"model": "glm-live", "prov": "p"}
-    assert _last_act(jdb) == {"glm-old": now - 200 * 1000, "glm-live": now}
+    assert running_models(jdb) == []
+    jdb.execute("INSERT INTO message VALUES (?, ?, ?)",  # 窗口内且未 finish → 运行中
+                (now, now, json.dumps({"role": "assistant", "modelID": "glm-live",
+                                       "providerID": "p"})))
+    assert running_models(jdb) == [{"model": "glm-live", "prov": "p"}]
+    assert sorted(_last_act(jdb).items()) == [("glm-live", now), ("glm-old", now - 200 * 1000)]
+    # 新键名（2026-09 ZCode 起落库为 modelId/providerId）
+    jdb2 = sqlite3.connect(":memory:")
+    jdb2.execute("CREATE TABLE message (time_created INTEGER, time_updated INTEGER, data TEXT)")
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?)",  # 已 finish → 不算运行中
+                 (now - 1000, now, json.dumps({"role": "assistant", "modelId": "nex-done",
+                                               "providerId": "p", "finish": "stop"})))
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?)",  # 流式中 → 运行中
+                 (now, now, json.dumps({"role": "assistant", "modelId": "nex-live",
+                                        "providerId": "p", "finish": None})))
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?)",  # 并发第二会话也在生成
+                 (now, now, json.dumps({"role": "assistant", "modelId": "qwen-live",
+                                        "providerId": "p2", "finish": "started"})))
+    assert sorted(r["model"] for r in running_models(jdb2)) == ["nex-live", "qwen-live"]
+    # 长回合：created 超窗但仍在更新 → _last_act 判活（90s 窗口不过期）
+    jdb2.execute("INSERT INTO message VALUES (?, ?, ?)",
+                 (now - 300 * 1000, now - 5 * 1000,
+                  json.dumps({"role": "assistant", "modelId": "long-turn",
+                              "providerId": "p", "finish": "tool-calls"})))
+    assert _last_act(jdb2)["long-turn"] == now - 5 * 1000
     assert _last_act(cdb) == {}  # 无 data 列 → 退回空
     print("self-check OK")
 
@@ -562,36 +593,47 @@ def compact_stats(db, days=30):
     return [{"title": t, "n": n, "last": last} for t, n, last in rows]
 
 
-def live_model(db, window_ms=90 * 1000):
-    """返回窗口内最新 assistant 模型；旧消息不能伪装成运行中。"""
+def running_models(db, window_ms=90 * 1000):
+    """所有正在生成的模型（并发会话逐个返回，不止最新一条）。
+    判据：assistant 消息 finish 为空或 'started' = 流未结束仍在生成；
+    完成后 finish 落定为 stop/tool-calls/completed 等。
+    活跃看 time_updated（流式期间会刷新），旧消息不能伪装成运行中。"""
     cutoff = int(time.time() * 1000) - window_ms
     try:
         cols = {r[1] for r in db.execute("PRAGMA table_info(message)")}
         if "data" in cols:
-            r = db.execute(
-                """SELECT data FROM message
+            # ZCode 落库键名 modelID/providerID → modelId/providerId，两种都认
+            rows = db.execute(
+                """SELECT COALESCE(json_extract(data,'$.modelId'),
+                                   json_extract(data,'$.modelID')) AS mid,
+                          COALESCE(json_extract(data,'$.providerId'),
+                                   json_extract(data,'$.providerID')) AS pid
+                   FROM message
                    WHERE json_extract(data, '$.role')='assistant'
-                     AND time_created >= ?
-                   ORDER BY time_created DESC LIMIT 1""", (cutoff,)).fetchone()
-            if not r:
-                return None
-            msg = json.loads(r[0])
-            return {"model": msg.get("modelID"), "prov": msg.get("providerID")} \
-                if msg.get("modelID") else None
-        r = db.execute(
-            """SELECT modelID, providerID FROM message
-               WHERE role='assistant' AND modelID IS NOT NULL AND time_created >= ?
-               ORDER BY time_created DESC LIMIT 1""", (cutoff,)).fetchone()
-    except (sqlite3.Error, json.JSONDecodeError, TypeError):
-        return None
-    return {"model": r[0], "prov": r[1]} if r and r[0] else None
+                     AND time_updated >= ?
+                     AND (json_extract(data,'$.finish') IS NULL
+                          OR json_extract(data,'$.finish')='started')
+                   GROUP BY mid, pid""", (cutoff,)).fetchall()
+            return [{"model": m, "prov": p or ""} for m, p in rows if m]
+        rows = db.execute(
+            """SELECT DISTINCT modelID, providerID FROM message
+               WHERE role='assistant' AND modelID IS NOT NULL AND time_created >= ?""",
+            (cutoff,)).fetchall()  # 旧库无 data/finish 列：按最近活动近似
+    except sqlite3.Error:
+        return []
+    return [{"model": r[0], "prov": r[1] or ""} for r in rows if r[0]]
 
 
 def _last_act(db):
-    """model_id -> 最新 assistant 消息时间（生成中也算活动）。表缺失返回 {}。"""
+    """model_id -> 最新 assistant 活动时间（生成中也算活动）。表缺失返回 {}。
+    用 time_updated 而非 time_created：流式/工具调用期间行会持续刷新，
+    长回合（created 已超过 90s 仍在生成）不会误判为不活跃。"""
     try:
+        # 键名兼容：新库 $.modelId，旧库 $.modelID
         return dict(db.execute(
-            """SELECT json_extract(data,'$.modelID') AS mid, MAX(time_created)
+            """SELECT COALESCE(json_extract(data,'$.modelId'),
+                               json_extract(data,'$.modelID')) AS mid,
+                      MAX(time_updated)
                FROM message WHERE json_extract(data,'$.role')='assistant'
                GROUP BY mid""").fetchall())
     except sqlite3.Error:
@@ -632,12 +674,15 @@ def detail_data(db, provs, tool="zcode"):
         ditems.append({"model": r[2], "prov": c[2], "when": c[0],
                        "tps": f'{agg["tps"]:.1f}{agg["mark"]}',
                        "tpsV": round(agg["tps"]), "cnt": cnt, "rpm": rpm})
-    # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）
+    # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）；
+    # 并发多会话逐个显示，不止最新一个
     seen = {i["model"] for i in items}
-    lm = live_model(db)
-    if lm and lm["model"] not in seen:
+    for lm in running_models(db):
+        if lm["model"] in seen:
+            continue
+        seen.add(lm["model"])
         items.append({"model": lm["model"],
-                      "prov": (provs or {}).get(lm["prov"], lm["prov"][:8]),
+                      "prov": (provs or {}).get(lm["prov"], (lm["prov"] or "?")[:8]),
                       "when": "…", "tps": "…", "tpsV": 0, "ttft": "-",
                       "tok": "-", "run": 1})
     return {"sum": today_summary(db), "sess": session_stats(db), "models": items,
