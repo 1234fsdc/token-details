@@ -700,25 +700,25 @@ def detail_data(db, provs, tool="zcode"):
                        "tps": f'{agg["tps"]:.1f}{agg["mark"]}',
                        "tpsV": round(agg["tps"]), "cnt": cnt, "rpm": rpm})
     # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）。
-    # 用户 2026-09-23：运行中也要显示数字——面板上静止 = 看起来坏了。
+    # 用户 2026-09-23：运行中也要显示数字且不加任何标记——面板上静止 = 看起来坏了。
     # 生成期间没有任何实时 token 计数（实测 message/model_usage/日志均无），
-    # 故显示「≈最近5次均速」（标 ≈ 为参考值，回合结束即换成真实值）+ 已运行时长；
-    # 首次请求无历史可参考时只显示时长。运行中优先于刚完成的旧速度行。
+    # 数字 = 该模型最近 5 次加权均速（回合结束即替换为真实值，界面无差别）；
+    # 首次请求无历史可参考时显示"首次请求"占位。运行中优先于刚完成的旧速度行。
     hist = {a["row"][2]: a for a in aggs500}
     runm = {}
     for lm in running_models(db):
         runm.setdefault(lm["model"], lm)  # 同模型并发取最早开始的请求
     if runm:
         items = [i for i in items if i["model"] not in runm]
-        now_ms = time.time() * 1000
         for m, lm in runm.items():
             a = hist.get(m)
-            run_s = max(0, int((now_ms - lm["started"]) / 1000)) if lm["started"] else 0
             items.append({"model": m,
                           "prov": (provs or {}).get(lm["prov"], (lm["prov"] or "?")[:8]),
-                          "when": "…", "tps": f'≈{a["tps"]:.1f}' if a else "…",
+                          "when": datetime.fromtimestamp(lm["started"] / 1000).strftime("%H:%M")
+                          if lm["started"] else "…",
+                          "tps": f'{a["tps"]:.1f}' if a else "…",
                           "tpsV": round(a["tps"]) if a else 0, "ttft": "-",
-                          "tok": "-", "run": 1, "run_s": run_s})
+                          "tok": "-", "run": 1})
     return {"sum": today_summary(db), "sess": session_stats(db), "models": items,
             "dmodels": ditems,
             "bm": today_by_model(db, provs), "cmp": compact_stats(db),
@@ -979,16 +979,14 @@ i.fast{background:var(--fast)}i.mid{background:var(--mid)}i.slow{background:var(
 <script>
 function cls(v){return v>=80?"fast":(v>=50?"mid":"slow")}
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
-function dur(s){return s<60?s+"s":Math.floor(s/60)+"m"+(s%60)+"s"}
 function update(d){
   var h="";
   for(const r of d.rows){
     var c=cls(r.tpsV), w=Math.min(100,Math.round(r.tpsV/120*100));
-    // 运行中：数字给参考值（≈最近5次均速，首次请求无历史则空），供应商位标运行时长
-    var prov=esc(r.prov)+(r.run?" · 运行 "+dur(r.run_s||0):"");
-    var v=(r.run&&r.tpsV===0)?"<span style='color:#9a978c;font-size:12px;font-weight:400'>首次请求</span>"
+    // 运行中行与完成行同样式渲染数字（无历史时 tps="…" 置灰占位）
+    var v=(r.run&&r.tpsV===0)?"<span style='color:#9a978c;font-size:12px;font-weight:400'>…</span>"
                             :r.tps+"<small> t/s</small>";
-    h+=`<div class="row"><div class="l1"><span class="nm">${esc(r.model)}</span><span class="prov">${prov}</span><span class="v ${c}">${v}</span></div><div class="bar"><i class="${c}" style="width:${w}%"></i></div></div>`;
+    h+=`<div class="row"><div class="l1"><span class="nm">${esc(r.model)}</span><span class="prov">${esc(r.prov)}</span><span class="v ${c}">${v}</span></div><div class="bar"><i class="${c}" style="width:${w}%"></i></div></div>`;
   }
   document.getElementById("rows").innerHTML=h||'<div class="empty">暂无数据</div>';
 }
