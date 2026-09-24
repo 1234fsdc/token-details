@@ -96,8 +96,10 @@ def today_summary(db):
                   COALESCE(SUM(CASE WHEN query_source!='compact'
                                     THEN output_tokens+reasoning_tokens END), 0),
                   COALESCE(SUM(CASE WHEN query_source!='compact'
-                                    THEN CASE WHEN first_token_at IS NOT NULL
-                                              THEN completed_at - first_token_at
+                                    THEN CASE WHEN started_at IS NOT NULL
+                                                   AND completed_at IS NOT NULL
+                                                   AND completed_at > started_at
+                                              THEN completed_at - started_at
                                               ELSE duration_ms END END), 0),
                   COALESCE(SUM(output_tokens), 0),
                   COALESCE(SUM(input_tokens), 0),
@@ -281,8 +283,17 @@ def _est_map(db, rows):
     return {uid: c2t[mid] for uid, mid in mid_of.items() if c2t.get(mid)}
 
 
+def _elapsed_ms(row):
+    """请求完整耗时：从模型请求开始到完成，贴近用户等待体感。
+    duration_ms 是旧库/异常时间戳的兜底。"""
+    started, done, dur = row[4], row[6], row[7]
+    if started and done and done > started:
+        return done - started
+    return dur or 0
+
+
 def calc(row, est=None):
-    """row -> (tps, ttft_s, mark)；mark='*' 表示回退 duration（含排队）。
+    """row -> (tps, ttft_s, mark)。tps 使用请求完整耗时，贴近体感。
     est：无回报模型的估算 token 表（见 _est_map），真实回报恒 0 时替代。"""
     (_id, _prov, _model, status, started, ft, done, dur, out, reason) = row
     if status != "completed" or not done:
@@ -290,17 +301,14 @@ def calc(row, est=None):
     tok = (out or 0) + (reason or 0)
     if status == "completed" and not tok and est:
         tok = est.get(_id, 0)
-    if not tok:  # 供应商未回报 usage（如 Vyce 空行）→ 0 token 无速度可言
+    elapsed = _elapsed_ms(row)
+    if not tok or elapsed <= 0:  # 供应商未回报 usage 或缺少有效时长
         return None
-    if ft and done > ft:
-        ttft = (ft - started) / 1000.0 if started and ft >= started else None
-        return tok * 1000.0 / (done - ft), ttft, ""
-    if dur and dur > 0:
-        return tok * 1000.0 / dur, None, "*"
-    return None
+    ttft = (ft - started) / 1000.0 if ft and started and ft >= started else None
+    return tok * 1000.0 / elapsed, ttft, ""
 
 
-def fmt_cells(row, provs):
+def fmt_cells(row, provs, est=None):
     """row -> (时间, 模型, 供应商, 速度str, tps数值, 首字, tokens, status)"""
     (_id, prov_id, model, status, started, ft, done, dur, out, reason) = row
     prov = provs.get(prov_id, (prov_id or "?")[:8])
@@ -308,7 +316,7 @@ def fmt_cells(row, provs):
     tok_s = f"{out or 0}+{reason or 0}"
     if status != "completed":
         return when, model or "?", prov, status, 0.0, "-", tok_s, status
-    c = calc(row)
+    c = calc(row, est)
     if c is None:
         return when, model or "?", prov, "无数据", 0.0, "-", tok_s, status
     tps, ttft, mark = c
@@ -320,12 +328,16 @@ def fmt_cells(row, provs):
 def self_check():
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
-    assert abs(tps - 500) < 0.01 and abs(ttft - 1.0) < 0.01 and mark == ""
+    assert abs(tps - 250) < 0.01 and abs(ttft - 1.0) < 0.01 and mark == ""
+    # 体感口径回归：首字后仍需 1 秒，但完整请求耗时 10 秒 → 50 t/s，不得算成 500 t/s
+    r_wall = ("x", "p", "m", "completed", 1000, 2000, 11000, 10000, 500, 0)
+    tps_wall, _, _ = calc(r_wall)
+    assert abs(tps_wall - 50) < 0.01
     r2 = ("x", "p", "m", "completed", 1000, None, 3000, 2000, 500, 0)
     tps2, ttft2, mark2 = calc(r2)
-    assert abs(tps2 - 250) < 0.01 and ttft2 is None and mark2 == "*"
+    assert abs(tps2 - 250) < 0.01 and ttft2 is None and mark2 == ""
     assert calc(("x", "p", "m", "error", 1000, None, 3000, 100, 10, 0)) is None
-    assert calc(("x", "p", "m", "completed", 1000, None, 3000, 0, 500, 0)) is None
+    assert calc(("x", "p", "m", "completed", None, None, None, 0, 500, 0)) is None
     assert calc(("x", "p", "m", "completed", 1000, 2000, 3000, 0, 0, 0)) is None  # 空 usage 不算速度
     # 无回报模型估算（Agnes 类供应商）：完成行 output 恒 0 → part 正文字符×TOK_PER_CHAR
     sdb = sqlite3.connect(":memory:")
@@ -356,20 +368,20 @@ def self_check():
     est = _est_map(sdb, srows)
     assert est and all(v == 60 for v in est.values()) and len(est) == 4, est
     assert "usage_model_main_turn_msg_r0_0" not in est  # 有回报模型不估算
-    tps_e, ttft_e, mark_e = calc(srows[0], est)  # 60 tok / (3000-2000)ms = 60 t/s
-    assert abs(tps_e - 60) < 0.01 and abs(ttft_e - 1.0) < 0.01 and mark_e == ""
+    tps_e, ttft_e, mark_e = calc(srows[0], est)  # 60 tok / (3000-1000)ms = 30 t/s
+    assert abs(tps_e - 30) < 0.01 and abs(ttft_e - 1.0) < 0.01 and mark_e == ""
     sa = [x for x in avg_by_model(srows, est=est) if x["row"][2] == "silent"]
-    assert len(sa) == 1 and abs(sa[0]["tps"] - 60) < 0.01 and sa[0]["mark"] == "", sa
+    assert len(sa) == 1 and abs(sa[0]["tps"] - 30) < 0.01 and sa[0]["mark"] == "", sa
     assert calc(srows[0]) is None  # 不传 est → 依旧无速度（原行为不变）
     sdb.execute("DROP TABLE part")
     assert _est_map(sdb, srows) == {}  # part 表缺失 → 退回无估算
-    # avg_by_model：同模型两条不同会话请求 → 合并加权平均（1000ms/500tok=500 + 2000ms/1000tok=500 → 1500ms/1500tok=500）
+    # avg_by_model：同模型三条请求全部按完整耗时合并（2000tok / 6000ms = 333.3 t/s）
     now = 100000
     a = ("x", "p", "glm", "completed", now, now + 1000, now + 2000, 0, 500, 0)
     b = ("y", "p", "glm", "completed", now + 3000, now + 4000, now + 6000, 0, 1000, 0)
     c = ("z", "p", "glm", "completed", now + 7000, None, now + 8000, 1000, 500, 0)
-    aggs = avg_by_model([b, c, a])  # c 无精确首字 → 舍弃，只算 a+b
-    assert len(aggs) == 1 and abs(aggs[0]["tps"] - 500.0) < 0.01 and aggs[0]["mark"] == "", aggs
+    aggs = avg_by_model([b, c, a])
+    assert len(aggs) == 1 and abs(aggs[0]["tps"] - 333.3333333) < 0.01 and aggs[0]["mark"] == "", aggs
     # 三页渲染：转义 / 数字 / 条宽 / 压缩与逐时块
     D = {"sum": {"n": 3, "tok": 1500, "talk_tok": 1500, "talk_ms": 3000,
                  "out": 1200, "inp": 7_000_000, "reason": 300, "cache": 0,
@@ -550,8 +562,9 @@ def self_check():
 
 def print_once(db):
     provs = provider_names()
+    est = _est_map(db, fetch_recent(db, limit=500))
     for row in latest_by_model(fetch_recent(db, limit=TABLE_N)):
-        c = fmt_cells(row, provs)
+        c = fmt_cells(row, provs, est)
         print(f"{c[1]}  [{c[2]}]  {c[0]}\n  {c[3]} t/s  首字 {c[5]}  {c[6]} tok")
     s = today_summary(db)
     avg = s["talk_tok"] * 1000.0 / s["talk_ms"] if s["talk_ms"] else 0.0
@@ -573,10 +586,9 @@ def latest_by_model(rows, window_ms=90 * 1000):
 
 
 def avg_by_model(rows, per=5, est=None):
-    """每模型聚合最近 per 条：速度 = 总 tokens ÷ 总生成窗口。
-    优先精确首字行；模型窗口内一条首字行都没有时回退 duration（含排队会虚低，
-    标 *）——否则整段消失（glm-5.3-flash 多数行缺 first_token_at）。
-    est：无回报模型的估算 token 表，真实回报恒 0 的行用估算值参与计算。"""
+    """每模型聚合最近 per 条：总 token ÷ 总请求耗时。
+    请求耗时从 started_at 到 completed_at，包含首字前等待/思考；
+    没有有效时间戳时回退 duration_ms。est 用于无回报模型的字符估算。"""
     by = {}
     for row in rows:
         c = calc(row, est)
@@ -584,27 +596,22 @@ def avg_by_model(rows, per=5, est=None):
             by.setdefault(row[2], []).append((row, c))
     out = []
     for model, lst in by.items():
-        recent = [(r, c) for r, c in lst if c[2] == ""][:per]
+        recent = [(r, c) for r, c in lst][:per]
         mark = ""
-        if not recent:  # 无首字行 → duration 回退，速度偏低但不消失
-            recent = [(r, c) for r, c in lst if c[2] == "*"][:per]
-            mark = "*"
         if not recent:
             continue
         tot_tok = sum((r[8] or 0) + (r[9] or 0) or (est or {}).get(r[0], 0)
                       for r, _ in recent)
-        gen_ms = sum((r[6] - r[5]) if c[2] == "" else (r[7] or 0)
-                     for r, c in recent)
-        if gen_ms > 0:
-            out.append({"row": recent[0][0], "tps": tot_tok * 1000.0 / gen_ms,
+        elapsed_ms = sum(_elapsed_ms(r) for r, _ in recent)
+        if elapsed_ms > 0:
+            out.append({"row": recent[0][0], "tps": tot_tok * 1000.0 / elapsed_ms,
                         "mark": mark})
     return out
 
 
 def session_stats(db, limit=30, window_ms=30 * 60 * 1000):
-    """按会话聚合 token 速度（加权：总 tokens ÷ 总生成窗口），标题取 session.title。
-    30 分钟无新活动的会话不显示；有回退行（无精确首字时间，含排队）的会话标 *。
-    排除 compact（v4 速度口径）。"""
+    """按会话聚合 token 速度（总 tokens ÷ 请求完整耗时），标题取 session.title。
+    30 分钟无新活动的会话不显示；排除 compact（v4 速度口径）。"""
     cutoff = time.time() * 1000 - window_ms
     rows = db.execute(
         """SELECT u.session_id,
@@ -614,11 +621,11 @@ def session_stats(db, limit=30, window_ms=30 * 60 * 1000):
                   CAST(SUM(u.output_tokens + u.reasoning_tokens + u.input_tokens
                       + u.cache_creation_input_tokens
                       + u.cache_read_input_tokens*?) AS INT),
-                  SUM(CASE WHEN u.first_token_at IS NOT NULL AND u.completed_at IS NOT NULL
-                                AND u.completed_at > u.first_token_at
-                           THEN u.completed_at - u.first_token_at ELSE u.duration_ms END),
+                  SUM(CASE WHEN u.started_at IS NOT NULL AND u.completed_at IS NOT NULL
+                                AND u.completed_at > u.started_at
+                           THEN u.completed_at - u.started_at ELSE u.duration_ms END),
                   MAX(COALESCE(u.completed_at, u.started_at)),
-                  SUM(CASE WHEN u.first_token_at IS NULL THEN 1 ELSE 0 END),
+                  0,
                   AVG(CASE WHEN u.first_token_at IS NOT NULL AND u.started_at IS NOT NULL
                                 AND u.first_token_at >= u.started_at
                            THEN u.first_token_at - u.started_at END),
@@ -758,7 +765,7 @@ def detail_data(db, provs, tool="zcode"):
         r = agg["row"]
         if max(r[6] or r[4] or 0, last_act.get(agg["row"][2]) or 0) < cutoff:
             continue
-        c = fmt_cells(agg["row"], provs)  # 最新条提供 when/tok 等展示
+        c = fmt_cells(agg["row"], provs, est)  # 最新条提供 when/tok 等展示
         items.append({"model": agg["row"][2], "prov": c[2], "when": c[0],
                       "tps": f'{agg["tps"]:.1f}{agg["mark"]}',
                       "tpsV": round(agg["tps"]), "ttft": c[5], "tok": c[6]})
@@ -777,7 +784,7 @@ def detail_data(db, provs, tool="zcode"):
         r = agg["row"]
         if (r[6] or r[4] or 0) < d0:
             continue
-        c = fmt_cells(r, provs)
+        c = fmt_cells(r, provs, est)
         cnt, mn, mx = stat.get(r[2], (0, None, None))
         rpm = cnt * 60000.0 / (mx - mn) if cnt > 1 and mx and mx > mn else 0.0
         ditems.append({"model": r[2], "prov": c[2], "when": c[0],
