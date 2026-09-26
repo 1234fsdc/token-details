@@ -863,7 +863,7 @@ def _model_rows(models):
         w = min(100, round(m["tpsV"] / 120 * 100))
         out += (f"<div class='row'><div class='t1'><span class='nm'>{html.escape(m['model'])}</span>"
                 f"<span class='meta'><span>{html.escape(m['prov'])}</span>"
-                f"<span>{m['cnt']} 次</span><span>{m['rpm']:.1f} 次/分</span>"
+                f"<span>{m.get('cnt', 0)} 次</span><span>{m.get('rpm', 0.0):.1f} 次/分</span>"
                 f"<span>{m['when']}</span></span>"
                 f"<span class='v {cls}'>{m['tps']}</span></div>"
                 f"<div class='bar'><i class='{cls}' style='width:{w}%'></i></div></div>")
@@ -1038,25 +1038,27 @@ font-variant-numeric:tabular-nums;overflow:hidden;white-space:nowrap}}
 HTML = """<!doctype html><html><head><meta charset="utf-8">
 <title>Token Details</title><style>
 *{margin:0;box-sizing:border-box}
-:root{--ink:#1a1d22;--muted:#9a978c;--hair:#f0ece1;--line:#e6e2d8;
---fast:#0a8f46;--mid:#d97706;--slow:#dc2626;
+:root{--ink:#11151a;--muted:#4b5560;--hair:rgba(70,78,88,.28);--line:rgba(70,78,88,.34);
+--fast:#087a3d;--mid:#b45f00;--slow:#bd1f1f;
 --num:Bahnschrift,"Segoe UI Variable Display","Segoe UI",sans-serif}
-html{color-scheme:light}
+html{color-scheme:light;background:transparent}
 body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:var(--ink);
-background:#fffdf8;overflow:hidden;user-select:none;min-height:52px}
-#grip{position:absolute;top:12px;left:8px;color:#b3ac9a;font-size:10px;
+background:transparent;overflow:hidden;user-select:none;min-height:52px}
+#grip{position:absolute;top:12px;left:8px;color:#11151a;font-size:10px;
 letter-spacing:2px;cursor:pointer;line-height:1}
 #rows{padding:0 16px 7px}
 .row:first-child{padding-left:14px}
 .row{padding:10px 2px;border-bottom:1px solid var(--hair)}
 .row:last-child{border-bottom:none;padding-bottom:10px}
 .l1{display:flex;align-items:baseline;gap:8px}
-.nm{font-size:12px;font-weight:600;letter-spacing:.1px;min-width:0;flex:0 1 auto;
+.nm{font-size:12px;font-weight:700;letter-spacing:.1px;min-width:0;flex:0 1 auto;
+color:var(--ink);text-shadow:0 0 1px rgba(255,255,255,.72);
 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.prov{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;
+.prov{font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:1px;
 white-space:nowrap;flex:1 1 0;min-width:0;
 overflow:hidden;text-overflow:ellipsis}
-.v{margin-left:auto;font-family:var(--num);font-size:19px;font-weight:700;
+.v{margin-left:auto;font-family:var(--num);font-size:19px;font-weight:800;
+color:var(--ink);text-shadow:0 0 1px rgba(255,255,255,.72);
 font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
 .v small{font-size:9px;color:var(--muted);font-family:"Segoe UI",sans-serif;font-weight:400}
 .bar{height:2px;background:var(--hair);margin-top:7px;border-radius:2px;overflow:hidden}
@@ -1128,9 +1130,10 @@ def run_web(db):
                     else:
                         ex |= 0x20  # 其余区域穿透
                     u32.SetWindowLongW(mh, -20, ex)
-                    # 亮色卡在深色壁纸上要够实才能读：默认 150 / 悬停 220 / 把手 235
+                    # WebView2 透明背景需要宿主分层 alpha 才能稳定显示；默认 125 比旧版 150 更透。
+                    # 文字颜色/字重/描边已单独增强，降低背景透明度时保持可读。
                     u32.SetLayeredWindowAttributes(
-                        mh, 0, 235 if in_grip else (220 if inside else 150), 2)
+                        mh, 0, 220 if in_grip else (190 if inside else 125), 2)
                     if in_grip and u32.GetAsyncKeyState(0x01) & 0x8000:
                         x0, y0, wx, wy = pt.x, pt.y, rc.l, rc.t
                         while u32.GetAsyncKeyState(0x01) & 0x8000:
