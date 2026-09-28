@@ -8,8 +8,8 @@
 
 数据源: ~/.zcode/cli/db/db.sqlite 的 model_usage 表（ZCode 回复完成后落库）
 口径: 速度统计排除 compact（后台压缩总结），总量统计包含；压缩记录=query_source='compact'。
-      速度 = 输出 token ÷ decode 段耗时（首 token→完成，2026-09-28 对齐 DeepSeek Harness）；
-      首字前等待不进分母（由 TTFT 呈现），缺首字时间的请求不计速度。
+      速度 = (输出+思考 token) ÷ 全请求耗时（started→completed，体感口径）；
+      Harness 纪律：分子分母同行配对、缺时间戳不计速度、duration_ms 不兜底；首字(TTFT)另行呈现。
 计划: token-speed-v4-plan.md
 """
 import ctypes
@@ -96,15 +96,15 @@ def today_summary(db):
                   COALESCE(SUM(output_tokens+reasoning_tokens+input_tokens
                                +cache_creation_input_tokens+cache_read_input_tokens), 0),
                   COALESCE(SUM(CASE WHEN query_source!='compact'
-                                    AND first_token_at IS NOT NULL
+                                    AND started_at IS NOT NULL
                                     AND completed_at IS NOT NULL
-                                    AND completed_at > first_token_at
+                                    AND completed_at > started_at
                                     THEN output_tokens+reasoning_tokens END), 0),
                   COALESCE(SUM(CASE WHEN query_source!='compact'
-                                    AND first_token_at IS NOT NULL
+                                    AND started_at IS NOT NULL
                                     AND completed_at IS NOT NULL
-                                    AND completed_at > first_token_at
-                                    THEN completed_at - first_token_at END), 0),
+                                    AND completed_at > started_at
+                                    THEN completed_at - started_at END), 0),
                   COALESCE(SUM(output_tokens), 0),
                   COALESCE(SUM(input_tokens), 0),
                   COALESCE(SUM(reasoning_tokens), 0),
@@ -288,16 +288,17 @@ def _est_map(db, rows):
 
 
 def _elapsed_ms(row):
-    """decode 段耗时：首 token → 完成（2026-09-28 对齐 DeepSeek Harness 口径）。
-    首字前的排队/思考不进速度分母，等待体感由 TTFT 单独呈现；
-    无首字时间或 decode 段无效返回 0，该行不计入任何速度聚合（Harness 同款）。"""
-    ft, done = row[5], row[6]
-    return done - ft if ft and done and done > ft else 0
+    """全请求耗时：请求发出 → 完成（体感口径：排队/预填充/思考/流式全在分母）。
+    Harness 折叠器纪律：只认有效墙钟对，duration_ms 不再兜底，
+    缺时间戳或跨度非正的行返回 0（不参与任何速度聚合）。"""
+    started, done = row[4], row[6]
+    return done - started if started and done and done > started else 0
 
 
 def calc(row, est=None):
-    """row -> (tps, ttft_s, mark)。tps = 输出 token ÷ decode 段耗时（首 token→完成），
-    对齐 DeepSeek Harness：无首字时间的行不计速度，duration_ms 不再兜底。
+    """row -> (tps, ttft_s, mark)。tps = (输出+思考 token) ÷ 全请求耗时
+    （started_at→completed_at，体感口径）。Harness 式纪律：分子分母按同一行
+    配对，缺时间戳的行不计速度、不进聚合；首字(TTFT)仍单独呈现。
     est：无回报模型的估算 token 表（见 _est_map），真实回报恒 0 时替代。"""
     (_id, _prov, _model, status, started, ft, done, dur, out, reason) = row
     if status != "completed" or not done:
@@ -332,14 +333,19 @@ def fmt_cells(row, provs, est=None):
 def self_check():
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
-    assert abs(tps - 500) < 0.01 and abs(ttft - 1.0) < 0.01 and mark == ""
-    # decode 口径（对齐 DeepSeek Harness）：首字后 9 秒 500 tok → 55.6 t/s；
-    # 首字前排队 1 秒不进分母（不得算成 50），也不得按首字后算成 500 之外虚高
+    assert abs(tps - 250) < 0.01 and abs(ttft - 1.0) < 0.01 and mark == ""
+    # 体感口径回归：全请求 10 秒（含首字前 1 秒等待）500 tok → 50 t/s，不得按 decode 算成 55.6
     r_wall = ("x", "p", "m", "completed", 1000, 2000, 11000, 10000, 500, 0)
     tps_wall, _, _ = calc(r_wall)
-    assert abs(tps_wall - 55.5556) < 0.01
+    assert abs(tps_wall - 50) < 0.01
     r2 = ("x", "p", "m", "completed", 1000, None, 3000, 2000, 500, 0)
-    assert calc(r2) is None  # 无首字时间 → 不计速度（Harness 同款，duration_ms 不再兜底）
+    tps2, ttft2, mark2 = calc(r2)
+    # 缺首字时间不影响速度（全请求口径不依赖 ft），ttft 为空
+    assert abs(tps2 - 250) < 0.01 and ttft2 is None and mark2 == ""
+    assert calc(("x", "p", "m", "error", 1000, None, 3000, 100, 10, 0)) is None
+    # 无 started/done 且 duration_ms=5000：不兜底（Harness 纪律），不计速度
+    assert calc(("x", "p", "m", "completed", None, None, None, 5000, 500, 0)) is None
+    assert calc(("x", "p", "m", "completed", 1000, 2000, 3000, 0, 0, 0)) is None  # 空 usage 不算速度
     assert calc(("x", "p", "m", "error", 1000, None, 3000, 100, 10, 0)) is None
     assert calc(("x", "p", "m", "completed", None, None, None, 0, 500, 0)) is None
     assert calc(("x", "p", "m", "completed", 1000, 2000, 3000, 0, 0, 0)) is None  # 空 usage 不算速度
@@ -372,21 +378,21 @@ def self_check():
     est = _est_map(sdb, srows)
     assert est and all(v == 60 for v in est.values()) and len(est) == 4, est
     assert "usage_model_main_turn_msg_r0_0" not in est  # 有回报模型不估算
-    tps_e, ttft_e, mark_e = calc(srows[0], est)  # 60 tok / (3000-2000)ms = 60 t/s
-    assert abs(tps_e - 60) < 0.01 and abs(ttft_e - 1.0) < 0.01 and mark_e == ""
+    tps_e, ttft_e, mark_e = calc(srows[0], est)  # 60 tok / (3000-1000)ms = 30 t/s
+    assert abs(tps_e - 30) < 0.01 and abs(ttft_e - 1.0) < 0.01 and mark_e == ""
     sa = [x for x in avg_by_model(srows, est=est) if x["row"][2] == "silent"]
-    assert len(sa) == 1 and abs(sa[0]["tps"] - 60) < 0.01 and sa[0]["mark"] == "", sa
+    assert len(sa) == 1 and abs(sa[0]["tps"] - 30) < 0.01 and sa[0]["mark"] == "", sa
     assert calc(srows[0]) is None  # 不传 est → 依旧无速度（原行为不变）
     sdb.execute("DROP TABLE part")
     assert _est_map(sdb, srows) == {}  # part 表缺失 → 退回无估算
-    # avg_by_model：decode 段合并（a+b 共 1500 tok / 3000ms = 500 t/s）；
-    # 缺首字的 c 行不进入聚合（完整请求 1 秒被排除，Harness 同款）
+    # avg_by_model：全请求合并（a+b+c 共 2000 tok / 6000ms ≈ 333.3 t/s）；
+    # 缺首字的 c 行仍参与（全请求口径不依赖 ft，覆盖率高于 decode 口径）
     now = 100000
     a = ("x", "p", "glm", "completed", now, now + 1000, now + 2000, 0, 500, 0)
     b = ("y", "p", "glm", "completed", now + 3000, now + 4000, now + 6000, 0, 1000, 0)
     c = ("z", "p", "glm", "completed", now + 7000, None, now + 8000, 1000, 500, 0)
     aggs = avg_by_model([b, c, a])
-    assert len(aggs) == 1 and abs(aggs[0]["tps"] - 500.0) < 0.01 and aggs[0]["mark"] == "", aggs
+    assert len(aggs) == 1 and abs(aggs[0]["tps"] - 333.3333333) < 0.01 and aggs[0]["mark"] == "", aggs
     # 三页渲染：转义 / 数字 / 条宽 / 压缩与逐时块
     D = {"sum": {"n": 3, "tok": 1500, "talk_tok": 1500, "talk_ms": 3000,
                  "out": 1200, "inp": 7_000_000, "reason": 300, "cache": 0,
@@ -444,7 +450,7 @@ def self_check():
     assert [r[0] for r in fetch_recent(mdb)] == ["a", "d"]
     s = today_summary(mdb)
     assert s["n"] == 1 and s["tok"] == 300 and s["talk_tok"] == 100, s
-    assert s["talk_ms"] == 3000, s  # decode 分母：row a 首字 now-4000 → 完成 now-1000
+    assert s["talk_ms"] == 4000, s  # 全请求分母：row a started now-5000 → 完成 now-1000
     mdb.execute("INSERT INTO session VALUES ('s', 's', NULL)")
     c = compact_stats(mdb)
     assert len(c) == 1 and c[0]["n"] == 2 and c[0]["title"] == "s", c
@@ -592,8 +598,8 @@ def latest_by_model(rows, window_ms=90 * 1000):
 
 
 def avg_by_model(rows, per=5, est=None):
-    """每模型聚合最近 per 条：总 token ÷ 总 decode 段耗时（首 token→完成，
-    对齐 DeepSeek Harness）。缺首字时间的行不计速度、不进入聚合。
+    """每模型聚合最近 per 条：总 token ÷ 总全请求耗时（started→completed，体感口径）。
+    分子分母同行配对，缺时间戳的行不进聚合（Harness 纪律）。
     est 用于无回报模型的字符估算。"""
     by = {}
     for row in rows:
@@ -616,25 +622,25 @@ def avg_by_model(rows, per=5, est=None):
 
 
 def session_stats(db, limit=30, window_ms=30 * 60 * 1000):
-    """按会话聚合 token 速度（总 tokens ÷ decode 段耗时：首 token→完成），
+    """按会话聚合 token 速度（总 tokens ÷ 全请求耗时：started→completed，体感口径），
     标题取 session.title。30 分钟无新活动的会话不显示；排除 compact（v4 速度口径）。
-    分子分母按同一有效性条件配对（缺首字的行不进速度）。"""
+    分子分母按同一有效性条件配对（缺时间戳的行不进速度）。"""
     cutoff = time.time() * 1000 - window_ms
     rows = db.execute(
         """SELECT u.session_id,
                   COALESCE(s.title, u.session_id),
                   COUNT(*),
-                  SUM(CASE WHEN u.first_token_at IS NOT NULL
+                  SUM(CASE WHEN u.started_at IS NOT NULL
                                 AND u.completed_at IS NOT NULL
-                                AND u.completed_at > u.first_token_at
+                                AND u.completed_at > u.started_at
                            THEN u.output_tokens + u.reasoning_tokens END),
                   CAST(SUM(u.output_tokens + u.reasoning_tokens + u.input_tokens
                       + u.cache_creation_input_tokens
                       + u.cache_read_input_tokens*?) AS INT),
-                  SUM(CASE WHEN u.first_token_at IS NOT NULL
+                  SUM(CASE WHEN u.started_at IS NOT NULL
                                 AND u.completed_at IS NOT NULL
-                                AND u.completed_at > u.first_token_at
-                           THEN u.completed_at - u.first_token_at END),
+                                AND u.completed_at > u.started_at
+                           THEN u.completed_at - u.started_at END),
                   MAX(COALESCE(u.completed_at, u.started_at)),
                   0,
                   AVG(CASE WHEN u.first_token_at IS NOT NULL AND u.started_at IS NOT NULL
