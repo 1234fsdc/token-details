@@ -597,7 +597,7 @@ def latest_by_model(rows, window_ms=90 * 1000):
     return list(seen.values())
 
 
-def avg_by_model(rows, per=5, est=None):
+def avg_by_model(rows, per=8, est=None):
     """每模型聚合最近 per 条：总 token ÷ 总全请求耗时（started→completed，体感口径）。
     分子分母同行配对，缺时间戳的行不进聚合（Harness 纪律）。
     est 用于无回报模型的字符估算。"""
@@ -810,7 +810,7 @@ def detail_data(db, provs, tool="zcode"):
     # 正在生成的模型立刻可见（message 表实时落库，model_usage 要等回合结束）。
     # 用户 2026-09-23：运行中也要显示数字且不加任何标记——面板上静止 = 看起来坏了。
     # 生成期间没有任何实时 token 计数（实测 message/model_usage/日志均无），
-    # 数字 = 该模型最近 5 次加权均速（回合结束即替换为真实值，界面无差别）；
+    # 数字 = 该模型最近 8 次加权均速（回合结束即替换为真实值，界面无差别）；
     # 首次请求无历史可参考时显示"首次请求"占位。运行中优先于刚完成的旧速度行。
     hist = {a["row"][2]: a for a in aggs500}
     runm = {}
@@ -916,7 +916,7 @@ def page_spd(D, mode="m"):
                      f"<span class='{_sc(avg)}'>{avg:.1f}</span><small> t/s</small>"),
                     ("平均请求速度", f"{s['rpm']:.1f}<small> 次/分</small>"),
                     ("平均首字速度", ttft_v)])
-            + "<div class='sec'>每模型速度 · 今日（最近 5 条加权）</div>"
+            + "<div class='sec'>每模型速度 · 今日（最近 8 条加权）</div>"
             + (body or "<div class='empty'>今日暂无数据</div>")
             + "<div class='sec'>会话速度 · 30 分钟窗口</div>"
             + (sbody or "<div class='empty'>30 分钟内无活动会话</div>"))
