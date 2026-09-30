@@ -1187,15 +1187,17 @@ def run_web(db):
                         pass
                 if tool:
                     cur_tool[0] = tool
-                sdb = codex_db() if cur_tool[0] == "codex" else db
-                sprovs = ({"codex": "Codex"} if cur_tool[0] == "codex"
-                          else provider_names())  # 每秒重读：配置可能后于面板启动更新
-                D = detail_data(sdb, sprovs, cur_tool[0])  # 面板与详情三页同源
-                sig = str([(m["model"], m["prov"], m["tps"]) for m in D["models"]])
+                # 简略面板双源同显（2026-09-30 定稿）：ZCode 行在前、Codex 行在后，
+                # Codex 行 prov 标 Codex 天然区分；详情三页仍跟随详情窗下拉（cur_tool）。
+                dz = detail_data(db, provider_names(), "zcode")  # 每秒重读：配置可能后于面板启动更新
+                dc = detail_data(codex_db(), {"codex": "Codex"}, "codex")
+                D = dc if cur_tool[0] == "codex" else dz
+                panel_rows = dz["models"] + dc["models"]
+                sig = str([(m["model"], m["prov"], m["tps"]) for m in panel_rows])
                 if sig != last_sig[0]:  # 行集合变了才记，转瞬即逝的显示可回查
                     last_sig[0] = sig
                     trace(sig)
-                payload = json.dumps({"rows": D["models"]}, ensure_ascii=False)
+                payload = json.dumps({"rows": panel_rows}, ensure_ascii=False)
                 w.evaluate_js(f"update({payload})")
                 # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）
                 pages = json.dumps({"ov": page_ov(D), "spd": page_spd(D),
