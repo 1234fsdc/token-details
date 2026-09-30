@@ -207,10 +207,18 @@ def _iso_ms(s):
 
 
 def _parse_rollout(mdb, path):
-    """单个 Codex rollout → model_usage 行 + session 行。token_count 是累计值，
-    相邻事件差分=该段用量，事件间隔≈生成窗口（估算，含工具/空闲时间）；
-    input 拆掉 cached 对齐 zcode 语义（input 不含缓存）。compacted→compact 标记行。"""
-    sid, model, prev_ts, prev_tot = "", "", None, None
+    """单个 Codex rollout → model_usage 行 + session 行。
+    token_count 分两种（2026-09-30 实测）：带 info.last_token_usage 的在每次
+    模型响应完成时发射，行 = 单次响应；无用量的是检查点 ping（大量存在、且可能
+    先于其响应 item 落盘，文件序不可信），跳过不动任何状态。
+    tokens 取 last_token_usage（单响应用量；旧累计差分会把续接文件的首行
+    全量转储重复计入今日总量）；分母窗口起点 = 最近输入边界（user 消息 /
+    function_call_output）与上一响应完成的较新者——扣掉用户打字/读屏与工具
+    执行时间，贴齐 ZCode 的请求级口径；响应在首个输出项出现时定格自己的起点
+    （响应自己的尾巴 function_call_output 不覆盖它）；无起点参照时 elapsed=0，
+    不计速度但保留行。input 拆掉 cached 对齐 zcode 语义。compacted→compact 标记行。"""
+    sid, model, prev_tc, boundary = "", "", None, None
+    resp_start, in_flight = None, False
     rows = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -232,14 +240,25 @@ def _parse_rollout(mdb, path):
                 model = p.get("model") or model or "?"
             elif t == "compacted" and sid and ts:
                 rows.append(("c", "", sid, ts, ts, {}))
+            elif t == "response_item" and ts:
+                pt = p.get("type")
+                if pt == "function_call_output" or (pt == "message" and p.get("role") == "user"):
+                    boundary = ts  # 输入就绪点：下一响应从此起算
+                elif pt and not in_flight:  # 响应首个输出项：定格本响应窗口起点
+                    c = [x for x in (boundary, prev_tc) if x is not None]
+                    resp_start = max(c) if c else None
+                    in_flight = True
             elif t == "event_msg" and p.get("type") == "token_count" and sid and ts:
-                tot = (p.get("info") or {}).get("total_token_usage") or {}
-                base = prev_tot or {k: 0 for k in tot}
-                dlt = {k: max(0, tot.get(k, 0) - base.get(k, 0)) for k in tot}
-                if any(dlt.values()):
-                    start = prev_ts if prev_ts is not None else ts
-                    rows.append(("m", model, sid, start, ts, dlt))
-                prev_ts, prev_tot = ts, tot
+                last = (p.get("info") or {}).get("last_token_usage") or {}
+                if not any((last.get(k) or 0) for k in ("output_tokens",
+                                                        "reasoning_output_tokens",
+                                                        "input_tokens")):
+                    continue  # 检查点 ping（无单响应用量，实测大量存在）：非响应结算，不动状态
+                c = [x for x in (resp_start, prev_tc) if x is not None]
+                start = max(c) if c else ts
+                rows.append(("m", model, sid, start, ts, last))
+                prev_tc = ts
+                resp_start, in_flight = None, False  # 响应已结算
     for kind, mdl, s2, start, ts, dlt in rows:
         if kind == "c":
             mdb.execute("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -588,28 +607,41 @@ def self_check():
     sub = [x for x in ts if x["title"] == "子代理"]
     assert len(sub) == 1 and sub[0]["cnt"] == 1, ts
     assert all(x["title"] != "s2" for x in ts)  # 子代理不单独成行
-    # Codex 适配：fake rollout（token_count 累计差分 / input 去缓存 / compacted 标记）
+    # Codex 适配：fake rollout（last_token_usage 单响应 / 输入边界抬升窗口 / compacted 标记）
     import tempfile
     from datetime import timedelta, timezone as _tz
     t = datetime.now(_tz.utc).replace(microsecond=0)
     iso = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    tu = lambda k: {"input_tokens": k, "cached_input_tokens": k * 10 // 11,
-                    "cache_write_input_tokens": 0, "output_tokens": k // 10,
-                    "reasoning_output_tokens": k // 100, "total_tokens": 0}
+    lu = lambda out, inp: {"input_tokens": inp, "cached_input_tokens": inp * 10 // 11,
+                           "cache_write_input_tokens": 0, "output_tokens": out,
+                           "reasoning_output_tokens": out // 10, "total_tokens": 0}
     tmp = os.path.join(tempfile.gettempdir(), "tps_rollout_test.jsonl")
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(json.dumps({"type": "session_meta", "timestamp": iso(t),
                             "payload": {"id": "s1", "cwd": r"C:\x\proj_a"}}) + "\n")
         f.write(json.dumps({"type": "turn_context", "timestamp": iso(t),
                             "payload": {"model": "gpt-x"}}) + "\n")
+        f.write(json.dumps({"type": "response_item", "timestamp": iso(t + timedelta(seconds=50)),
+                            "payload": {"type": "message", "role": "user"}}) + "\n")
+        f.write(json.dumps({"type": "response_item", "timestamp": iso(t + timedelta(seconds=55)),
+                            "payload": {"type": "message", "role": "assistant"}}) + "\n")
         f.write(json.dumps({"type": "event_msg", "timestamp": iso(t + timedelta(seconds=60)),
                             "payload": {"type": "token_count",
-                                        "info": {"total_token_usage": tu(1100)}}}) + "\n")
+                                        "info": {"last_token_usage": lu(110, 1100)}}}) + "\n")
+        f.write(json.dumps({"type": "response_item", "timestamp": iso(t + timedelta(seconds=70)),
+                            "payload": {"type": "function_call"}}) + "\n")
+        f.write(json.dumps({"type": "event_msg", "timestamp": iso(t + timedelta(seconds=75)),
+                            "payload": {"type": "token_count",
+                                        "info": {"last_token_usage": lu(20, 1500)}}}) + "\n")
+        f.write(json.dumps({"type": "response_item", "timestamp": iso(t + timedelta(seconds=90)),
+                            "payload": {"type": "function_call_output"}}) + "\n")
         f.write(json.dumps({"type": "compacted", "timestamp": iso(t + timedelta(seconds=120)),
                             "payload": {"message": ""}}) + "\n")
+        f.write(json.dumps({"type": "response_item", "timestamp": iso(t + timedelta(seconds=295)),
+                            "payload": {"type": "message", "role": "assistant"}}) + "\n")
         f.write(json.dumps({"type": "event_msg", "timestamp": iso(t + timedelta(seconds=300)),
                             "payload": {"type": "token_count",
-                                        "info": {"total_token_usage": tu(2200)}}}) + "\n")
+                                        "info": {"last_token_usage": lu(210, 2200)}}}) + "\n")
     cdb = sqlite3.connect(":memory:")
     cdb.execute("CREATE TABLE model_usage (id TEXT, session_id TEXT, provider_id TEXT,"
                 " model_id TEXT, status TEXT, started_at INTEGER, first_token_at INTEGER,"
@@ -623,11 +655,12 @@ def self_check():
     rows = cdb.execute("SELECT model_id, output_tokens, input_tokens,"
                        " cache_read_input_tokens, duration_ms, query_source"
                        " FROM model_usage ORDER BY completed_at").fetchall()
-    assert [r[5] for r in rows] == ["main_turn", "compact", "main_turn"], rows
+    assert [r[5] for r in rows] == ["main_turn", "main_turn", "compact", "main_turn"], rows
     assert rows[0][0] == "gpt-x" and rows[0][1] == 110 and rows[0][2] == 100 \
-        and rows[0][3] == 1000 and rows[0][4] == 0, rows[0]
-    assert rows[2][1] == 110 and rows[2][2] == 100 and rows[2][3] == 1000 \
-        and rows[2][4] == 240000, rows[2]  # 首条无窗口=0，次条 60s→300s=240s
+        and rows[0][3] == 1000 and rows[0][4] == 10000, rows[0]  # 起点=用户消息边界（50s→60s）
+    assert rows[1][1] == 20 and rows[1][4] == 15000, rows[1]  # 背靠背响应：起点=上一响应完成（60s→75s）
+    assert rows[3][1] == 210 and rows[3][2] == 200 and rows[3][3] == 2000 \
+        and rows[3][4] == 210000, rows[3]  # 起点抬到 function_call_output（90s→300s）：扣掉工具执行
     cs = compact_stats(cdb)
     assert len(cs) == 1 and cs[0]["n"] == 1 and cs[0]["title"] == "proj_a", cs
     # running_models 旧库分支（无 data/finish 列）：按最近活动近似，30 分钟窗口
