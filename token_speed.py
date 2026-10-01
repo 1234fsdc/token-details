@@ -40,7 +40,8 @@ ZCODE_TITLE = "ZCode"             # 当前 ZCode 桌面窗口标题
 OVERLAY_WIDTH = 178                # Header 内速度胶囊的逻辑宽度
 OVERLAY_HEIGHT = 32                # Header 内速度胶囊的逻辑高度
 OVERLAY_HEADER_HEIGHT = 48         # ZCode WorkspaceHeader 的 h-12
-OVERLAY_RIGHT_MARGIN = 132         # 避开右侧系统窗控和 ZCode 操作按钮
+OVERLAY_RIGHT_MARGIN = 132         # 无 UIA 锚点时的兼容回退
+OVERLAY_GAP = 8                    # 速度文字与“选择打开方式”按钮的间距
 ERRLOG = r"C:/Users/Public/weberr.log"  # 调试日志，errlog() 内超 1MB 截断
 
 
@@ -77,14 +78,17 @@ def log_frame(text):
 
 
 def overlay_position(client_x, client_y, client_w, client_h, dpi,
-                     panel_w, panel_h):
-    """按 ZCode 客户区右上角计算 overlay 位置（全部为屏幕物理像素）。"""
+                     panel_w, panel_h, anchor=None):
+    """把 overlay 放在“选择打开方式”按钮左侧，全部使用屏幕物理像素。"""
     scale = (dpi or 96) / 96.0
-    right = round(OVERLAY_RIGHT_MARGIN * scale)
     header_h = round(OVERLAY_HEADER_HEIGHT * scale)
-    x = client_x + max(0, client_w - panel_w - right)
-    y = client_y + max(0, round((header_h - panel_h) / 2))
-    return x, y
+    if anchor:
+        ax, ay, aw, ah = anchor
+        return (ax - round(OVERLAY_GAP * scale) - panel_w,
+                ay + round((ah - panel_h) / 2))
+    right = round(OVERLAY_RIGHT_MARGIN * scale)
+    return (client_x + max(0, client_w - panel_w - right),
+            client_y + max(0, round((header_h - panel_h) / 2)))
 
 
 def set_per_monitor_dpi_awareness():
@@ -383,9 +387,14 @@ def self_check():
     assert srow["title"] == "会话一" and len(srow["models"]) == 1
     assert srow["models"][0]["model"] == "new-model"
     sdb.close()
-    # overlay 定位：客户区右上角锚定，DPI 变化只影响逻辑间距换算。
-    assert overlay_position(100, 200, 1000, 800, 96, 178, 32) == (790, 208)
-    assert overlay_position(100, 200, 1000, 800, 144, 267, 48) == (635, 212)
+    # overlay 定位：优先贴在“选择打开方式”按钮左侧，避免退回到错误的右下角位置。
+    assert overlay_position(0, 0, 2880, 1524, 96, 178, 32,
+                            [2372, 30, 40, 56]) == (2186, 42)
+    assert overlay_position(100, 200, 1000, 800, 144, 267, 48,
+                            [2200, 300, 60, 84]) == (1921, 318)
+    assert "background:rgba(25,30,38,.86)" not in ZCODE_HTML
+    assert "background:transparent" in ZCODE_HTML and "box-shadow:none" in ZCODE_HTML
+    # 无 UIA 锚点时保留纯函数兼容回退；实际同步循环会隐藏 overlay。
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
     assert abs(tps - 250) < 0.01 and abs(ttft - 1.0) < 0.01 and mark == ""
@@ -885,19 +894,21 @@ def session_speed_data(db, session_id, provs, limit=8, model_hint=""):
 def zcode_context():
     """读取 ZCode Header 当前任务标题和模型选择，供会话 overlay 绑定。"""
     if os.name != "nt":
-        return {"title": "", "model": ""}
+        return {"title": "", "model": "", "anchor": None}
     try:
         script = r'''$ErrorActionPreference="Stop"; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes;
 $p=Get-Process ZCode -ErrorAction Stop | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1;
 if(!$p){throw "ZCode main window not found"};
 $root=[System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle);
 $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
-$buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model="";
-foreach($e in $buttons){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){ $model=$e.Current.Name; break }}
+$buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null;
+foreach($e in $buttons){$r=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
+if(!$model -and $r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){$model=$e.Current.Name};
+if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$r.Left,[int]$r.Top,[int]$r.Width,[int]$r.Height)}}
 $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
 $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
 foreach($e in $texts){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 500 -and $r.Left -lt 1800 -and $r.Width -ge 250 -and $r.Width -le 700 -and $e.Current.Name.Length -lt 160 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
-[pscustomobject]@{title=$title;model=$model}|ConvertTo-Json -Compress'''
+[pscustomobject]@{title=$title;model=$model;anchor=$anchor}|ConvertTo-Json -Compress'''
         cp = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
                              "-WindowStyle", "Hidden", "-Command", script],
                             capture_output=True, timeout=3.0)
@@ -913,10 +924,14 @@ foreach($e in $texts){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscree
         model = str(data.get("model") or "").strip()
         if "/" in model:
             model = model.rsplit("/", 1)[-1].strip()
-        return {"title": str(data.get("title") or "").strip(), "model": model}
+        anchor = data.get("anchor")
+        if not isinstance(anchor, list) or len(anchor) != 4:
+            anchor = None
+        return {"title": str(data.get("title") or "").strip(),
+                "model": model, "anchor": anchor}
     except Exception as e:
         errlog("uia-context", e)
-        return {"title": "", "model": ""}
+        return {"title": "", "model": "", "anchor": None}
 
 
 def zcode_session_title():
@@ -1271,11 +1286,10 @@ ZCODE_HTML = """<!doctype html><html><head><meta charset="utf-8">
 *{margin:0;box-sizing:border-box}
 html,body{width:100%;height:100%;overflow:hidden;background:transparent}
 body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
-  display:flex;align-items:center;justify-content:center;user-select:none}
-#badge{height:28px;min-width:150px;padding:0 10px;border:1px solid rgba(255,255,255,.2);
-  border-radius:6px;background:rgba(25,30,38,.86);color:#f5f7fa;display:flex;
-  align-items:center;justify-content:center;gap:6px;box-shadow:0 2px 8px rgba(0,0,0,.22);
-  font-size:12px;font-weight:600;line-height:1;white-space:nowrap}
+  display:flex;align-items:center;justify-content:flex-end;user-select:none}
+#badge{height:28px;min-width:0;padding:0;border:0;border-radius:0;background:transparent;color:#f5f7fa;display:flex;
+  align-items:center;justify-content:center;gap:6px;box-shadow:none;
+  font-size:12px;font-weight:600;line-height:1;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.9),0 0 2px rgba(0,0,0,.9)}
 #value{font-family:Bahnschrift,"Segoe UI Variable Display","Segoe UI",sans-serif;
   font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
 #unit{font-size:10px;color:#c7ced8;font-weight:400}
@@ -1374,7 +1388,9 @@ def run_web(db):
         else:
             ex &= ~WS_EX_TRANSPARENT & 0xFFFFFFFF
         u32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
-        u32.SetLayeredWindowAttributes(hwnd, 0, 232, 2)
+        u32.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
+
+    overlay_anchor = [None]
 
     def sync_zcode_overlay_loop():
         """同步独立 ZCode 会话面板；简略面板始终保持独立窗口。"""
@@ -1385,7 +1401,8 @@ def run_web(db):
             try:
                 overlay = u32.FindWindowW(None, ZCODE_PANEL_TITLE)
                 target = find_zcode_window()
-                active = target and u32.GetForegroundWindow() == target
+                foreground = u32.GetForegroundWindow()
+                active = target and foreground in (target, overlay)
                 visible = bool(target and active and not u32.IsIconic(target))
                 if overlay and visible:
                     geom = zcode_client_rect(target)
@@ -1395,7 +1412,13 @@ def run_web(db):
                         scale = dpi / 96.0
                         panel_w = round(OVERLAY_WIDTH * scale)
                         panel_h = round(OVERLAY_HEIGHT * scale)
-                        x, y = overlay_position(cx, cy, cw, ch, dpi, panel_w, panel_h)
+                        if not overlay_anchor[0]:
+                            u32.ShowWindow(overlay, SW_HIDE)
+                            last = None
+                            time.sleep(0.1)
+                            continue
+                        x, y = overlay_position(cx, cy, cw, ch, dpi, panel_w, panel_h,
+                                                 overlay_anchor[0])
                         state = (overlay, x, y, panel_w, panel_h, dpi)
                         set_overlay_style(overlay)
                         if state != last:
@@ -1499,6 +1522,7 @@ def run_web(db):
                 else:
                     w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
                     zctx = zcode_context()
+                    overlay_anchor[0] = zctx.get("anchor")
                     sid = find_session_by_title(db, zctx["title"])
                     zdata = session_speed_data(
                         db, sid, provider_names(), model_hint=zctx["model"])
@@ -1572,7 +1596,8 @@ def run_web(db):
     if not standalone:
         zw = webview.create_window(ZCODE_PANEL_TITLE, html=ZCODE_HTML,
                                    width=OVERLAY_WIDTH, height=OVERLAY_HEIGHT,
-                                   frameless=True, on_top=True, transparent=True)
+                                   min_size=(1, 1), frameless=True, on_top=True,
+                                   transparent=True)
     # overlay 模式由 ZCode 前台状态决定显示；standalone 模式按原逻辑显示。
     if standalone:
         w.events.closing += lambda: (w.hide(), False)[1]  # × = 隐藏到托盘
@@ -1671,7 +1696,8 @@ def run_web(db):
                     zw = webview.create_window(
                         ZCODE_PANEL_TITLE, html=ZCODE_HTML,
                         width=OVERLAY_WIDTH, height=OVERLAY_HEIGHT,
-                        frameless=True, on_top=True, transparent=True)
+                        min_size=(1, 1), frameless=True, on_top=True,
+                        transparent=True)
                     set_window_icon()
             except Exception as e:
                 errlog("watchdog", e)

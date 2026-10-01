@@ -16,8 +16,11 @@
 
 ## 当前会话与模型绑定
 
-- 每秒通过 Windows UI Automation 读取 ZCode Header 当前任务标题和当前模型按钮文本。
-- 当前任务标题按 `session.title` 映射到 SQLite 的唯一活动 session；重复标题按 `time_updated` 最新项选择。
+- 每秒通过 Windows UI Automation 读取 ZCode Header 当前任务标题、当前模型按钮和“选择打开方式”按钮 bounds。
+- overlay 锚定在“选择打开方式”按钮左侧 8px，随该按钮的真实屏幕坐标移动，不再使用固定右侧边距猜测。
+- overlay 宿主显式设置 `min_size=(1,1)`，避免 pywebview 默认最小窗口 `200x100` 把透明区域放大到 Header 下方；实际外框尺寸与 `OVERLAY_WIDTH/OVERLAY_HEIGHT` 一致。
+- overlay 宿主和 HTML 均保持透明：不绘制深色矩形、边框或阴影，只显示带轻微描边的速度文字。
+- 如果 UIA 暂时读不到“选择打开方式”按钮，overlay 隐藏，避免错误地落到 Header 其他区域。
 - ZCode overlay 查询必须带这个 `session_id`，不使用全局最近模型数据。
 - 同一会话内只保留 Header 当前模型的已完成请求；模型切换后立即重新聚合。
 - 切换会话后下一次刷新使用新 session；旧 session 的速度不保留到新会话。
