@@ -29,35 +29,41 @@ def move_to(x, y):
     u32.mouse_event(0x0001, 0, 0, 0, 0)
 
 p = subprocess.Popen([sys.executable, APP, "--standalone"])
-time.sleep(7)
-rc0, ex0 = main_rect_ex()
-assert ex0 & 0x20, "default must be click-through"
+try:
+    time.sleep(7)
+    rc0, ex0 = main_rect_ex()
+    assert ex0 & 0x20, "default must be click-through"
 
-# 悬停把手热区（左上角 42x20 CSS 内）→ 穿透应解除
-dpi = u32.GetDpiForWindow(u32.FindWindowW(None, TITLE)) or 96
-gx, gy = rc0.l + round(20 * dpi / 96), rc0.t + round(10 * dpi / 96)
-move_to(gx, gy); time.sleep(0.6)
-_, ex1 = main_rect_ex()
-assert not (ex1 & 0x20), f"grip hotspot did not unlock (ex=0x{ex1:08X})"
+    # 悬停把手热区（token_speed.py GRIP=(4,8,26,26)，此处取点 20,10 在区内）→ 穿透应解除
+    dpi = u32.GetDpiForWindow(u32.FindWindowW(None, TITLE)) or 96
+    gx, gy = rc0.l + round(20 * dpi / 96), rc0.t + round(10 * dpi / 96)
+    move_to(gx, gy); time.sleep(0.6)
+    _, ex1 = main_rect_ex()
+    assert not (ex1 & 0x20), f"grip hotspot did not unlock (ex=0x{ex1:08X})"
 
-# 按住拖动 → 面板整体移动
-u32.mouse_event(0x0002, 0, 0, 0, 0)     # LEFTDOWN
-for i in range(1, 11):                  # +100,+60 分步
-    move_to(gx + 10 * i, gy + 6 * i)
-    time.sleep(0.05)
-u32.mouse_event(0x0004, 0, 0, 0, 0)     # LEFTUP
-time.sleep(0.5)
-rc1, _ = main_rect_ex()
-dx, dy = rc1.l - rc0.l, rc1.t - rc0.t
-print(f"panel followed=({dx},{dy})")
+    # 按住拖动 → 面板整体移动
+    u32.mouse_event(0x0002, 0, 0, 0, 0)     # LEFTDOWN
+    for i in range(1, 11):                  # +100,+60 分步
+        move_to(gx + 10 * i, gy + 6 * i)
+        time.sleep(0.05)
+    u32.mouse_event(0x0004, 0, 0, 0, 0)     # LEFTUP
+    time.sleep(0.5)
+    rc1, _ = main_rect_ex()
+    dx, dy = rc1.l - rc0.l, rc1.t - rc0.t
+    print(f"panel followed=({dx},{dy})")
 
-# 鼠标移到面板中部 → 穿透恢复
-move_to(rc1.l + (rc1.r - rc1.l) // 2, rc1.t + (rc1.b - rc1.t) // 2)
-time.sleep(0.6)
-_, ex2 = main_rect_ex()
-print(f"ex grip=0x{ex1:08X}(unlocked) mid=0x{ex2:08X} moved=({dx},{dy})")
-assert abs(dx - 100) <= 15 and abs(dy - 60) <= 15, "panel did not follow drag"
-assert ex2 & 0x20, "click-through not restored off-grip"
-move_to(rc1.r + 200, rc1.b + 200)
-p.kill()
+    # 鼠标移到面板中部 → 穿透恢复
+    move_to(rc1.l + (rc1.r - rc1.l) // 2, rc1.t + (rc1.b - rc1.t) // 2)
+    time.sleep(0.6)
+    _, ex2 = main_rect_ex()
+    print(f"ex grip=0x{ex1:08X}(unlocked) mid=0x{ex2:08X} moved=({dx},{dy})")
+    assert abs(dx - 100) <= 15 and abs(dy - 60) <= 15, "panel did not follow drag"
+    assert ex2 & 0x20, "click-through not restored off-grip"
+    move_to(rc1.r + 200, rc1.b + 200)
+finally:
+    # 断言失败也必须收尸：遗留实例占着 single_instance 互斥体，下次运行的新实例
+    # 会静默退出，而 FindWindowW 摸到的是旧窗口——测试结果彻底失真
+    if p.poll() is None:
+        p.kill()
+    p.wait(timeout=5)
 print("PASS: grip hotspot drags whole panel; off-grip stays click-through")

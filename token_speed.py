@@ -196,7 +196,8 @@ def provider_names():
 
 # ---- Codex 适配层：rollout JSONL → zcode 形状的 model_usage，全部查询零改动复用 ----
 CODEX_SESSIONS = os.path.expanduser("~/.codex/sessions")
-CODEX_CACHE = {"db": None, "mtimes": None}  # mtime 集合不变则复用，变化则全量重建
+CODEX_CACHE = {"db": None, "mtimes": None,
+               "scan_at": 0.0}  # mtime 集合不变则复用；scan_at 全量扫描的节流时刻
 
 
 def _iso_ms(s):
@@ -256,7 +257,13 @@ def _parse_rollout(mdb, path):
 
 
 def codex_db():
-    """近 8 天 Codex rollout → 内存 sqlite；sessions 目录不存在/无文件返回空库。"""
+    """近 8 天 Codex rollout → 内存 sqlite；sessions 目录不存在/无文件返回空库。
+    扫描节流 3s：push_loop 每秒调一次，全量 walk+getmtime 随文件数线性涨，是
+    常驻进程里唯一逐秒退化的开销；新 rollout 最多延迟 3s 被感知（面板 1s 刷新，体感无差）。"""
+    now = time.time()
+    if CODEX_CACHE["db"] is not None and now - CODEX_CACHE["scan_at"] < 3.0:
+        return CODEX_CACHE["db"]
+    CODEX_CACHE["scan_at"] = now
     cutoff = time.time() - 8 * 86400
     files = {}
     for root, _dirs, names in os.walk(CODEX_SESSIONS):
@@ -420,6 +427,14 @@ def self_check():
     assert overlay_text({"models": [{"tps": "46.4", "tpsV": 46}]})["rgb"] == OVERLAY_VALUE
     assert overlay_text(None)["value"] == "0" and overlay_text({})["value"] == "0"
     assert overlay_text({})["rgb"] == OVERLAY_EMPTY
+    # watcher 输出解析：模型 provider 前缀剥离、anchor 容错、bytes 解码、坏行拒绝
+    pz = parse_watcher_line('{"title":"会话一","model":"p/new-model","anchor":[1,2,3,4]}')
+    assert pz == {"title": "会话一", "model": "new-model", "anchor": [1, 2, 3, 4]}
+    assert parse_watcher_line('{"title":"","model":"","anchor":null}')["anchor"] is None
+    assert parse_watcher_line(b'{"title":"x","model":"m","anchor":[1,2,3,4]}')["title"] == "x"
+    assert parse_watcher_line("not json") is None
+    # 空行/空 JSON 是合法输出（ZCode 不在时 watcher 的空态），归一为空 zctx
+    assert parse_watcher_line("") == {"title": "", "model": "", "anchor": None}
     # 无 UIA 锚点时保留纯函数兼容回退；实际同步循环会隐藏 overlay。
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
@@ -967,6 +982,144 @@ foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notma
 def zcode_session_title():
     """兼容旧调用：返回当前 ZCode Header 任务标题。"""
     return zcode_context()["title"]
+
+
+# 常驻 UIA 观察进程（用户 2026-10-02 改定：切换会话 ~0.5s 内换数）。旧路径在
+# push_loop 里每秒新起 PowerShell（实测单次 ~1s：进程启动+加载自动化程序集+
+# 遍历控件树），切换会话后最坏 2-3s 才换数，还拖慢面板刷新节奏。
+# 控件遍历逻辑与 zcode_context 的脚本保持一致，两处改动要同步。
+UIA_WATCH_SCRIPT = r'''$ErrorActionPreference="Stop"; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes;
+$root=$null; $hwnd0=[int64]0;
+while($true){
+  try{
+    $p=Get-Process ZCode -ErrorAction Stop | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1;
+    if(!$p){throw "ZCode main window not found"};
+    if([int64]$p.MainWindowHandle -ne $hwnd0){$hwnd0=[int64]$p.MainWindowHandle; $root=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd0)};
+    $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
+    $buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null;
+    foreach($e in $buttons){$r=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
+    if(!$model -and $r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){$model=$e.Current.Name};
+    if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$r.Left,[int]$r.Top,[int]$r.Width,[int]$r.Height)}}
+    $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
+    $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
+    if($texts.Count -eq 0){$texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
+    foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 60 -and $r.Left -lt 2500 -and $r.Width -ge 120 -and $r.Width -le 900 -and $e.Current.Name.Length -ge 8 -and $e.Current.Name.Length -lt 200 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
+    $o=[pscustomobject]@{title=$title;model=$model;anchor=$anchor}|ConvertTo-Json -Compress
+  }catch{
+    $root=$null;  # 缓存的根元素/窗口句柄失效（ZCode 重建窗口），下轮重锚
+    $o=[pscustomobject]@{title="";model="";anchor=$null}|ConvertTo-Json -Compress
+  }
+  [Console]::Out.WriteLine($o);
+  [Console]::Out.Flush();
+  Start-Sleep -Milliseconds 250
+}'''
+
+uia_watch = [{"title": "", "model": "", "anchor": None, "ts": 0.0}]
+_uia_proc = [None]
+
+
+def parse_watcher_line(raw):
+    """watcher 一行输出 → zctx dict（self_check 覆盖）。坏行返回 None。"""
+    try:
+        if isinstance(raw, bytes):
+            try:
+                raw = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                raw = raw.decode("mbcs", errors="replace")
+        data = json.loads((raw or "").strip() or "{}")
+        model = str(data.get("model") or "").strip()
+        if "/" in model:
+            model = model.rsplit("/", 1)[-1].strip()
+        anchor = data.get("anchor")
+        if not isinstance(anchor, list) or len(anchor) != 4:
+            anchor = None
+        return {"title": str(data.get("title") or "").strip(),
+                "model": model, "anchor": anchor}
+    except Exception:
+        return None
+
+
+def _watcher_loop():
+    """常驻 PowerShell 观察进程的守护：每行输出更新 uia_watch；进程退出或
+    >3s 无输出（ZCode 挂死会阻塞 UIA 同步调用）即杀掉重启，指数退避。"""
+    backoff = 1.0
+    while True:
+        try:
+            proc = subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-NonInteractive",
+                 "-Command", UIA_WATCH_SCRIPT],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            _uia_proc[0] = proc
+            spawn_ts = time.time()
+
+            def reader():
+                for line in proc.stdout:
+                    z = parse_watcher_line(line)
+                    if z is not None:
+                        z["ts"] = time.time()
+                        uia_watch[0] = z
+
+            th = threading.Thread(target=reader, daemon=True)
+            th.start()
+            while th.is_alive():
+                th.join(1.0)
+                ts = uia_watch[0]["ts"]
+                if (ts and time.time() - ts > 3.0) or \
+                        (not ts and time.time() - spawn_ts > 10):
+                    errlog("uia-watch", f"stalled {time.time() - max(ts, spawn_ts):.0f}s, restart")
+                    proc.kill()
+            backoff = 1.0
+        except Exception as e:
+            errlog("uia-watch", e)
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 15)
+
+
+def overlay_bind_loop():
+    """overlay 绑定专用线程：watcher 供 UIA（250ms 级），这里只做轻量 DB
+    查询，0.3s 一拍。db 连接线程私有（sqlite 连接跨线程并发使用不安全）。"""
+    bdb = connect()
+    while True:
+        try:
+            wv = uia_watch[0]
+            zctx = {"title": wv["title"], "model": wv["model"],
+                    "anchor": wv["anchor"]}
+            if zctx.get("anchor"):
+                overlay_anchor[0] = zctx["anchor"]
+                # FindAll(Text) 在 ZCode 忙时会整批空转——anchor/模型正常但
+                # 标题为空（实测 dump 零元素）；标题/模型为空沿用上次值，
+                # 否则一次部分失败就把会话绑定清成 0
+                if not zctx["title"]:
+                    zctx["title"] = uia_last[0]["title"]
+                if not zctx["model"]:
+                    zctx["model"] = uia_last[0]["model"]
+                uia_last[0] = {"title": zctx["title"], "model": zctx["model"]}
+            else:
+                # watcher 全空（ZCode 不在/窗口重建中）时沿用上次健康值，
+                # 否则锚点被清空 → overlay 每轮闪没
+                zctx = uia_last[0]
+            sid = find_session_by_title(bdb, zctx["title"])
+            if not sid:
+                # UIA 的 Text 查询在 ZCode 忙时间歇空转（元素整批消失），
+                # 冷启动连 uia_last 都没有值可粘：标题读不到时退而绑定
+                # 最近活跃会话；切换会话后标题一旦可读，上面的匹配立即纠正
+                sid = fallback_session(bdb)
+            zdata = session_speed_data(
+                bdb, sid, provider_names(), model_hint=zctx["model"])
+            # overlay 口径（用户 2026-10-02 改定）：会话 90s 内无 assistant
+            # 活动即视为空闲，速度归零——对齐面板 90s 规则，简略/详情不变。
+            # 按 message.time_updated 判活（同面板 _last_act 道理）：长回合
+            # 生成中没有新完成行，但 message 持续刷新，不会误归零
+            if zdata and zdata["models"] and session_last_act(
+                    bdb, sid) < time.time() * 1000 - 90 * 1000:
+                zdata = None
+            zpayload = zdata or {"session": "", "title": zctx["title"],
+                                 "model": zctx["model"], "models": []}
+            overlay_payload[0] = zpayload  # 同步线程每 0.1s 取走重绘层叠窗口
+        except Exception as e:
+            errlog("bind", e)
+        time.sleep(0.3)
 
 
 def find_session_by_title(db, title):
@@ -1703,59 +1856,26 @@ def run_web(db):
                     trace(sig)
                 if w:
                     w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
-                if not standalone:
-                    zctx = zcode_context()
-                    if zctx.get("anchor"):
-                        overlay_anchor[0] = zctx["anchor"]
-                        # FindAll(Text) 在 ZCode 忙时会整批空转——anchor/模型正常但
-                        # 标题为空（实测 dump 零元素）；标题/模型为空沿用上次值，
-                        # 否则一次部分失败就把会话绑定清成 0
-                        if not zctx["title"]:
-                            zctx["title"] = uia_last[0]["title"]
-                        if not zctx["model"]:
-                            zctx["model"] = uia_last[0]["model"]
-                        uia_last[0] = {"title": zctx["title"], "model": zctx["model"]}
-                    else:
-                        # weberr.log 实测 UIA 超时会成串出现（3s 预算整段 TimeoutExpired），
-                        # 此时沿用上次健康值，否则锚点被清空 → overlay 每轮闪没
-                        zctx = uia_last[0]
-                    sid = find_session_by_title(db, zctx["title"])
-                    if not sid:
-                        # UIA 的 Text 查询在 ZCode 忙时间歇空转（元素整批消失），
-                        # 冷启动连 uia_last 都没有值可粘：标题读不到时退而绑定
-                        # 最近活跃会话；切换会话后标题一旦可读，上面的匹配立即纠正
-                        sid = fallback_session(db)
-                    zdata = session_speed_data(
-                        db, sid, provider_names(), model_hint=zctx["model"])
-                    # overlay 口径（用户 2026-10-02 改定）：会话 90s 内无 assistant
-                    # 活动即视为空闲，速度归零——对齐面板 90s 规则，简略/详情不变。
-                    # 按 message.time_updated 判活（同面板 _last_act 道理）：长回合
-                    # 生成中没有新完成行，但 message 持续刷新，不会误归零
-                    if zdata and zdata["models"] and session_last_act(
-                            db, sid) < time.time() * 1000 - 90 * 1000:
-                        zdata = None
-                    zpayload = zdata or {"session": "", "title": zctx["title"],
-                                         "model": zctx["model"], "models": []}
-                    overlay_payload[0] = zpayload  # 同步线程每 0.1s 取走重绘层叠窗口
-                # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）
+                # overlay 的 UIA 探测/会话绑定已移出：watcher 进程 + overlay_bind_loop
+                # 专职供给（切换会话 ~0.5s 换数），这里不再每秒起 PowerShell 探测
+                # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）。
+                # 快照迭代、不整表回写：on_detail 在别的线程并发 append，
+                # detail_win[:] 会把刚加入的窗口抹掉；关闭摘除走 closing 事件
+                # （on_detail 挂钩）。刷新异常只记日志：瞬时失败≠窗口已关，不能踢。
                 pages = json.dumps({"ov": page_ov(D), "spd": page_spd(D),
                                     "tok": page_tok(D)},
                                    ensure_ascii=False)
-                alive = []
-                for dw in detail_win:
+                for dw in list(detail_win):
                     try:
                         if dw.hidden:
-                            alive.append(dw)
                             continue
                         dw.evaluate_js(
                             "var p=" + pages + ";"
                             "document.getElementById('pg-ov').innerHTML=p.ov;"
                             "document.getElementById('pg-spd').innerHTML=p.spd;"
                             "document.getElementById('pg-tok').innerHTML=p.tok;")
-                        alive.append(dw)
-                    except Exception:
-                        pass  # 窗口已关闭 → 移除
-                detail_win[:] = alive
+                    except Exception as e:
+                        errlog("detail-refresh", e)
                 if standalone and w and not w.hidden:
                     # 高度随内容自适应：亮色卡有边框/内边距，按 body 整体实测
                     h_css = w.evaluate_js("document.body.offsetHeight")
@@ -1824,6 +1944,7 @@ def run_web(db):
                                   height=panel_height, frameless=True, on_top=True,
                                   transparent=True)
     panel_pref = [standalone]  # 简略面板期望可见态；overlay 模式默认不显示（用户 2026-10-01）
+    panel_lock = threading.Lock()  # ensure_panel 的 check-then-create：托盘线程 × watchdog 并发
 
     # × = 隐藏到托盘
     def on_panel_closing():
@@ -1836,13 +1957,14 @@ def run_web(db):
         """简略面板按需创建：不能用 create_window(hidden=True)——pywebview 的
         透明 hack 会在导航开始时 form.Show() 把窗口重新显示出来（实测）。"""
         nonlocal w
-        if u32.FindWindowW(None, TITLE):
-            return
-        w = webview.create_window(
-            TITLE, html=HTML, width=panel_width, height=panel_height,
-            frameless=True, on_top=True, transparent=True)
-        w.events.closing += on_panel_closing
-        set_window_icon()
+        with panel_lock:
+            if u32.FindWindowW(None, TITLE):
+                return
+            w = webview.create_window(
+                TITLE, html=HTML, width=panel_width, height=panel_height,
+                frameless=True, on_top=True, transparent=True)
+            w.events.closing += on_panel_closing
+        set_window_icon()  # 锁外调用：它找到窗口后会常驻轮询，持锁会连 watchdog 一起冻住
     if not standalone:
         create_overlay_window()
     detail_win = []
@@ -1884,6 +2006,12 @@ def run_web(db):
             win = webview.create_window(
                 DETAIL_TITLE, html=detail_html(D),
                 width=510, height=570, on_top=False)
+
+            def on_closed():  # 关闭即从刷新列表摘除；不能返回 False——pywebview 里那会取消关闭
+                if win in detail_win:
+                    detail_win.remove(win)
+
+            win.events.closing += on_closed
             detail_win.append(win)  # 持引用防 GC
         except Exception as e:
             errlog("detail", e)
@@ -1942,6 +2070,9 @@ def run_web(db):
     threading.Thread(target=sync_zcode_overlay_loop, daemon=True).start()
     threading.Thread(target=hover_loop, daemon=True).start()
     threading.Thread(target=tray_loop, daemon=True).start()
+    if not standalone:  # overlay 数据源：常驻 UIA watcher + 专用绑定线程
+        threading.Thread(target=_watcher_loop, daemon=True).start()
+        threading.Thread(target=overlay_bind_loop, daemon=True).start()
     if "--detail" in sys.argv:  # 测试钩子：4s 后自动打开详情（同托盘点击代码路径）
         threading.Thread(target=lambda: (time.sleep(4), on_detail()),
                          daemon=True).start()
@@ -1966,8 +2097,8 @@ def main():
     if "--self-check" in sys.argv:
         self_check()
         return
-    db = connect()
     try:
+        db = connect()  # connect 也必须在 try 内：mode=ro 打不开不存在的文件，直接抛异常
         db.execute("SELECT 1 FROM model_usage LIMIT 1")
     except sqlite3.Error as exc:
         sys.exit(f"无法读取 model_usage: {exc}")
