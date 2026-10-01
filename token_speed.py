@@ -1213,15 +1213,19 @@ def run_web(db):
             u32.GetWindowTextW(hwnd, buf, 256)
             title = buf.value.strip()
             if title == ZCODE_TITLE or title.startswith(ZCODE_TITLE + " "):
-                found.append(hwnd)
+                rc = RECT()
+                if u32.GetWindowRect(hwnd, ctypes.byref(rc)):
+                    area = max(0, rc.r - rc.l) * max(0, rc.b - rc.t)
+                    found.append((hwnd, area))
             return True
 
         enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
                                        ctypes.c_void_p)(callback)
         u32.EnumWindows(enum_proc, 0)
-        if foreground in found:
-            return foreground
-        return found[0] if found else 0
+        foreground_matches = [hwnd for hwnd, _ in found if hwnd == foreground]
+        if foreground_matches:
+            return foreground_matches[0]
+        return max(found, key=lambda item: item[1], default=(0, 0))[0]
 
     def zcode_client_rect(hwnd):
         """获取客户区左上角和尺寸，转换到屏幕物理像素。"""
