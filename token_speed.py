@@ -2,7 +2,8 @@
 """Token Details（原 ZCode Token 速度监控）v4 — 图形窗口
 
 用法:
-  python token_speed.py              图形窗口（悬浮面板 + 详情三页：总览/速度/总量）
+  python token_speed.py              跟随 ZCode Header 的速度 overlay + 详情三页
+  python token_speed.py --standalone 自由悬浮面板（无 ZCode 目标时的兼容模式）
   python token_speed.py --once       打印一帧数据后退出
   python token_speed.py --self-check 跑 tps 计算与三页渲染断言
 
@@ -33,6 +34,11 @@ CHART_N = 20   # 柱状图条数
 LOG = None  # --log-file PATH：内容变化时追加一帧，测试观察口
 TITLE = "Token Details"          # 主窗/托盘名（HTML <title> 必须与其一致，FindWindowW 锚点）
 DETAIL_TITLE = "Token Details 详情"
+ZCODE_TITLE = "ZCode"             # 当前 ZCode 桌面窗口标题
+OVERLAY_WIDTH = 178                # Header 内速度胶囊的逻辑宽度
+OVERLAY_HEIGHT = 32                # Header 内速度胶囊的逻辑高度
+OVERLAY_HEADER_HEIGHT = 48         # ZCode WorkspaceHeader 的 h-12
+OVERLAY_RIGHT_MARGIN = 132         # 避开右侧系统窗控和 ZCode 操作按钮
 ERRLOG = r"C:/Users/Public/weberr.log"  # 调试日志，errlog() 内超 1MB 截断
 
 
@@ -66,6 +72,35 @@ def log_frame(text):
         return
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(f"[{datetime.now().strftime('%H:%M:%S')}]\n{text}\n")
+
+
+def overlay_position(client_x, client_y, client_w, client_h, dpi,
+                     panel_w, panel_h):
+    """按 ZCode 客户区右上角计算 overlay 位置（全部为屏幕物理像素）。"""
+    scale = (dpi or 96) / 96.0
+    right = round(OVERLAY_RIGHT_MARGIN * scale)
+    header_h = round(OVERLAY_HEADER_HEIGHT * scale)
+    x = client_x + max(0, client_w - panel_w - right)
+    y = client_y + max(0, round((header_h - panel_h) / 2))
+    return x, y
+
+
+def set_per_monitor_dpi_awareness():
+    """让 overlay 与 ZCode 使用同一套跨显示器物理坐标。"""
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 
 def connect():
@@ -331,6 +366,9 @@ def fmt_cells(row, provs, est=None):
 
 
 def self_check():
+    # overlay 定位：客户区右上角锚定，DPI 变化只影响逻辑间距换算。
+    assert overlay_position(100, 200, 1000, 800, 96, 178, 32) == (790, 208)
+    assert overlay_position(100, 200, 1000, 800, 144, 267, 48) == (635, 212)
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
     assert abs(tps - 250) < 0.01 and abs(ttft - 1.0) < 0.01 and mark == ""
@@ -1103,11 +1141,44 @@ function update(d){
 </script></body></html>"""
 
 
+OVERLAY_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<title>Token speed</title><style>
+*{margin:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:transparent}
+body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  display:flex;align-items:center;justify-content:center;user-select:none}
+#badge{height:28px;min-width:150px;padding:0 10px;border:1px solid rgba(255,255,255,.2);
+  border-radius:6px;background:rgba(25,30,38,.86);color:#f5f7fa;display:flex;
+  align-items:center;justify-content:center;gap:6px;box-shadow:0 2px 8px rgba(0,0,0,.22);
+  font-size:12px;font-weight:600;line-height:1;white-space:nowrap}
+#value{font-family:Bahnschrift,"Segoe UI Variable Display","Segoe UI",sans-serif;
+  font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
+#unit{font-size:10px;color:#c7ced8;font-weight:400}
+.empty{color:#c7ced8;font-size:11px;font-weight:400}
+.fast{color:#8ce3b0}.mid{color:#ffd18a}.slow{color:#ff9b9b}
+</style></head><body><div id="badge"><span id="value" class="empty">—</span><span id="unit">t/s</span></div>
+<script>
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function cls(v){return v>=80?"fast":(v>=50?"mid":"slow")}
+function update(d){
+  var r=(d.rows&&d.rows.length)?d.rows[0]:null;
+  var value=document.getElementById("value"), unit=document.getElementById("unit");
+  if(!r){value.className="empty";value.textContent="—";unit.textContent="t/s";return}
+  value.className=cls(r.tpsV);value.innerHTML=esc(r.tps);unit.textContent=" t/s";
+  document.getElementById("badge").title=esc(r.model)+" · "+esc(r.prov);
+}
+</script></body></html>"""
+
 
 def run_web(db):
     import threading
     import webview
     provs = provider_names()
+    standalone = "--standalone" in sys.argv
+    set_per_monitor_dpi_awareness()
+    panel_html = HTML if standalone else OVERLAY_HTML
+    panel_width = 250 if standalone else OVERLAY_WIDTH
+    panel_height = 118 if standalone else OVERLAY_HEIGHT
 
     u32 = ctypes.WinDLL("user32", use_last_error=True)
 
@@ -1118,10 +1189,108 @@ def run_web(db):
         _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
                     ("r", ctypes.c_long), ("b", ctypes.c_long)]
 
-    # 把手热区（CSS px，首行模型左侧的 ⠿，与 HTML 里 #grip 位置对齐）
+    SW_HIDE = 0
+    SW_SHOWNOACTIVATE = 4
+    GWL_EXSTYLE = -20
+    WS_EX_LAYERED = 0x00080000
+    WS_EX_TRANSPARENT = 0x00000020
+    WS_EX_TOOLWINDOW = 0x00000080
+    WS_EX_NOACTIVATE = 0x08000000
+    SWP_NOACTIVATE = 0x0010
+    SWP_NOOWNERZORDER = 0x0200
+    SWP_SHOWWINDOW = 0x0040
+    HWND_TOPMOST = ctypes.c_void_p(-1)
+
+    def find_zcode_window():
+        """返回可见的 ZCode 主窗；不依赖屏幕固定坐标。"""
+        foreground = u32.GetForegroundWindow()
+        found = []
+
+        def callback(hwnd, _):
+            if not u32.IsWindowVisible(hwnd):
+                return True
+            buf = ctypes.create_unicode_buffer(256)
+            u32.GetWindowTextW(hwnd, buf, 256)
+            title = buf.value.strip()
+            if title == ZCODE_TITLE or title.startswith(ZCODE_TITLE + " "):
+                found.append(hwnd)
+            return True
+
+        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
+                                       ctypes.c_void_p)(callback)
+        u32.EnumWindows(enum_proc, 0)
+        if foreground in found:
+            return foreground
+        return found[0] if found else 0
+
+    def zcode_client_rect(hwnd):
+        """获取客户区左上角和尺寸，转换到屏幕物理像素。"""
+        local = RECT()
+        origin = POINT(0, 0)
+        if not u32.GetClientRect(hwnd, ctypes.byref(local)):
+            return None
+        if not u32.ClientToScreen(hwnd, ctypes.byref(origin)):
+            return None
+        width = max(0, local.r - local.l)
+        height = max(0, local.b - local.t)
+        if not width or not height:
+            return None
+        return origin.x, origin.y, width, height
+
+    def set_overlay_style(hwnd, click_through=True):
+        ex = u32.GetWindowLongW(hwnd, GWL_EXSTYLE) & 0xFFFFFFFF
+        ex = (ex & ~0x00040000 & 0xFFFFFFFF) | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        if click_through:
+            ex |= WS_EX_TRANSPARENT
+        else:
+            ex &= ~WS_EX_TRANSPARENT & 0xFFFFFFFF
+        u32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
+        u32.SetLayeredWindowAttributes(hwnd, 0, 232, 2)
+
+    def sync_overlay_loop():
+        """按 ZCode 客户区同步 overlay；隐藏时不抢焦点、不挡其它窗口。"""
+        if standalone:
+            return
+        last = None
+        while True:
+            try:
+                overlay = u32.FindWindowW(None, TITLE)
+                target = find_zcode_window()
+                active = target and u32.GetForegroundWindow() == target
+                visible = bool(target and active and not u32.IsIconic(target))
+                if overlay and visible:
+                    geom = zcode_client_rect(target)
+                    if geom:
+                        cx, cy, cw, ch = geom
+                        dpi = u32.GetDpiForWindow(target) or 96
+                        scale = dpi / 96.0
+                        panel_w = round(OVERLAY_WIDTH * scale)
+                        panel_h = round(OVERLAY_HEIGHT * scale)
+                        x, y = overlay_position(cx, cy, cw, ch, dpi, panel_w, panel_h)
+                        state = (overlay, x, y, panel_w, panel_h, dpi)
+                        set_overlay_style(overlay)
+                        if state != last:
+                            u32.SetWindowPos(
+                                overlay, HWND_TOPMOST, x, y, panel_w, panel_h,
+                                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW)
+                            last = state
+                        else:
+                            u32.ShowWindow(overlay, SW_SHOWNOACTIVATE)
+                    else:
+                        u32.ShowWindow(overlay, SW_HIDE)
+                        last = None
+                elif overlay:
+                    u32.ShowWindow(overlay, SW_HIDE)
+                    last = None
+            except Exception as e:
+                errlog("overlay", e)
+            time.sleep(0.1)
     GRIP_X, GRIP_Y, GRIP_W, GRIP_H = 4, 8, 26, 26
 
     def hover_loop():
+        # standalone 模式保留原把手拖拽；overlay 模式由 ZCode 同步循环定位。
+        if not standalone:
+            return
         # 三态：悬停把手区=解除穿透+可拖；面板其余=永久穿透。
         # 拖拽靠全局鼠标状态轮询（pywebview 拖拽通道在此环境不通），启动后独立运行。
         time.sleep(2)
@@ -1197,7 +1366,8 @@ def run_web(db):
                 if sig != last_sig[0]:  # 行集合变了才记，转瞬即逝的显示可回查
                     last_sig[0] = sig
                     trace(sig)
-                payload = json.dumps({"rows": panel_rows}, ensure_ascii=False)
+                payload_rows = panel_rows if standalone else dz["models"]
+                payload = json.dumps({"rows": payload_rows}, ensure_ascii=False)
                 w.evaluate_js(f"update({payload})")
                 # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）
                 pages = json.dumps({"ov": page_ov(D), "spd": page_spd(D),
@@ -1218,7 +1388,7 @@ def run_web(db):
                     except Exception:
                         pass  # 窗口已关闭 → 移除
                 detail_win[:] = alive
-                if not w.hidden:  # 缩到托盘时页面不可见，跳过推送与调高
+                if standalone and not w.hidden:  # overlay 定位由 sync_overlay_loop 负责
                     # 高度随内容自适应：亮色卡有边框/内边距，按 body 整体实测
                     h_css = w.evaluate_js("document.body.offsetHeight")
                     hwnd = u32.FindWindowW(None, TITLE)
@@ -1259,10 +1429,14 @@ def run_web(db):
             pystray.MenuItem("退出", on_quit))
         pystray.Icon("zcode_tps", img, TITLE, menu).run()
 
-    w = webview.create_window(TITLE, html=HTML, width=250,
-                              height=118, frameless=True, on_top=True,
+    w = webview.create_window(TITLE, html=panel_html, width=panel_width,
+                              height=panel_height, frameless=True, on_top=True,
                               transparent=True)
-    w.events.closing += lambda: (w.hide(), False)[1]  # × = 隐藏到托盘（False=阻止销毁）
+    # overlay 模式由 ZCode 前台状态决定显示；standalone 模式按原逻辑显示。
+    if standalone:
+        w.events.closing += lambda: (w.hide(), False)[1]  # × = 隐藏到托盘
+    else:
+        w.events.closing += lambda: (w.hide(), False)[1]
     detail_win = []
     cur_tool = ["zcode"]  # 工具切换：详情窗下拉设置，面板全局跟随（push_loop 每秒轮询）
     # 热更新只在源码运行时可用：exe 打包后主脚本不落盘（__file__ 指向不存在路径）
@@ -1278,7 +1452,7 @@ def run_web(db):
         exec(compile(open(src_file, encoding="utf-8").read(), src_file, "exec"), ns)
         globals().update(ns)
         LOG = flag  # exec 把模块级 LOG 重置为 None，update 后还原 --log-file 状态
-        w.load_html(HTML)
+        w.load_html(OVERLAY_HTML if not standalone else HTML)
         if cur_tool[0] == "codex":
             D = detail_data(codex_db(), {"codex": "Codex"}, "codex")
         else:
@@ -1346,8 +1520,9 @@ def run_web(db):
             try:
                 if not u32.FindWindowW(None, TITLE):
                     w = webview.create_window(
-                        TITLE, html=HTML, width=250,
-                        height=118, frameless=True, on_top=True, transparent=True)
+                        TITLE, html=panel_html, width=panel_width,
+                        height=panel_height, frameless=True, on_top=True,
+                        transparent=True)
                     w.events.closing += lambda: (w.hide(), False)[1]
                     set_window_icon()
             except Exception as e:
@@ -1355,6 +1530,7 @@ def run_web(db):
 
     threading.Thread(target=set_window_icon, daemon=True).start()
     threading.Thread(target=panel_watchdog, daemon=True).start()
+    threading.Thread(target=sync_overlay_loop, daemon=True).start()
     threading.Thread(target=hover_loop, daemon=True).start()
     threading.Thread(target=tray_loop, daemon=True).start()
     if "--detail" in sys.argv:  # 测试钩子：4s 后自动打开详情（同托盘点击代码路径）
