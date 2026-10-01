@@ -1378,12 +1378,19 @@ def run_web(db):
         key = (name, px)
         if key not in overlay_font_cache:
             from PIL import ImageFont
-            try:
-                overlay_font_cache[key] = ImageFont.truetype(
-                    "C:/Windows/Fonts/" + name + ".ttf", px)
-            except Exception as e:
-                errlog("overlay-font", e)
-                overlay_font_cache[key] = ImageFont.load_default()
+            f = None
+            # 降级链：请求的字体缺文件时退到系统必有的 Segoe UI，
+            # 绝不落到 PIL 自带 11px 位图字体（实测会小得像 bug）
+            for cand in (name, "segoeuib", "segoeui"):
+                try:
+                    f = ImageFont.truetype("C:/Windows/Fonts/" + cand + ".ttf", px)
+                    break
+                except Exception:
+                    continue
+            if f is None:
+                errlog("overlay-font", "no Segoe UI font found")
+                f = ImageFont.load_default()
+            overlay_font_cache[key] = f
         return overlay_font_cache[key]
 
     def draw_overlay(hwnd, x, y, w, h, spec):
@@ -1391,7 +1398,8 @@ def run_web(db):
         from PIL import Image, ImageDraw
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        fv = overlay_font("segoeuisb", max(8, round(h * 13 / 32)))  # Semibold 13 CSS px
+        # 14 CSS px：Semibold 缺文件时由降级链落到 Bold；尺寸回到与标题同级
+        fv = overlay_font("segoeuisb", max(8, round(h * 14 / 32)))
         fu = overlay_font("segoeui", max(8, round(h * 10 / 32)))
         gap = max(1, round(5 * h / 32))
         wu = d.textlength(spec["unit"], font=fu)
