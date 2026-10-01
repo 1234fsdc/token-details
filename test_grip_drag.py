@@ -28,7 +28,7 @@ def move_to(x, y):
     u32.SetCursorPos(int(x), int(y))
     u32.mouse_event(0x0001, 0, 0, 0, 0)
 
-p = subprocess.Popen([sys.executable, APP])
+p = subprocess.Popen([sys.executable, APP, "--standalone"])
 time.sleep(7)
 rc0, ex0 = main_rect_ex()
 assert ex0 & 0x20, "default must be click-through"

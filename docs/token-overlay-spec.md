@@ -2,36 +2,55 @@
 
 ## 目标
 
-在不修改 `C:\APP\ZCode` 安装文件、不启动第二个 ZCode 进程的前提下，让现有 Token Details 程序在当前 ZCode 窗口 Header 右侧显示 Token 速度。
+在不修改 `C:\APP\ZCode` 安装文件、不启动第二个 ZCode 进程的前提下，让现有 Token Details 程序同时提供三种面板：
 
-## 模式
+1. **简略面板**：`Token Details`，保留原有全局 ZCode + Codex 多模型摘要。
+2. **详情面板**：`Token Details 详情`，保留原有总览/速度/总量三页。
+3. **ZCode 会话面板**：`Token Details ZCode`，透明跟随当前 ZCode 主窗口，只显示当前会话当前模型的速度。
 
-- 默认模式：创建透明、无边框、置顶、鼠标穿透的 overlay，跟随前台 ZCode 主窗口。
-- `--standalone`：保留原有自由悬浮面板，用于兼容没有 ZCode 窗口或需要手动拖动的场景。
-- overlay 不写入 ZCode 配置、数据库或安装目录；ZCode 自动更新不会覆盖 overlay 程序。
+## 三种面板
+
+- 默认启动创建简略面板和 ZCode 会话 overlay；详情面板按托盘“详情”打开。
+- `--standalone` 只启用原有自由悬浮简略面板，用于无 ZCode 目标或把手拖动回归测试。
+- ZCode overlay 不写入 ZCode 配置、数据库或安装目录；ZCode 自动更新不会覆盖 Token Details 程序。
+
+## 当前会话与模型绑定
+
+- 每秒通过 Windows UI Automation 读取 ZCode Header 当前任务标题和当前模型按钮文本。
+- 当前任务标题按 `session.title` 映射到 SQLite 的唯一活动 session；重复标题按 `time_updated` 最新项选择。
+- ZCode overlay 查询必须带这个 `session_id`，不使用全局最近模型数据。
+- 同一会话内只保留 Header 当前模型的已完成请求；模型切换后立即重新聚合。
+- 切换会话后下一次刷新使用新 session；旧 session 的速度不保留到新会话。
+- 新模型没有已完成请求时显示 `— t/s`，不沿用旧模型数值。
+- 每个当前会话/模型最多取最近 8 条有效请求，继续沿用 Token Details 当前速度口径。
 
 ## 定位与窗口状态
 
-- 通过可见顶层窗口标题 `ZCode` 找到目标窗口；优先使用当前前台 ZCode 窗口。
+- 通过可见顶层窗口标题 `ZCode` 找到目标窗口；优先前台 ZCode，否则按可见面积选择主窗口，避免辅助窗口误锚定。
 - 使用 `GetClientRect` + `ClientToScreen` 获取 ZCode 客户区屏幕坐标，不使用固定屏幕坐标。
 - 以 Workspace Header 的 `h-12`（48 CSS px）为垂直锚点。
 - 右侧保留固定逻辑像素间距，宽度、高度和偏移按 `GetDpiForWindow` 转换为物理像素。
 - ZCode 移动、调整大小、最大化、还原、跨显示器 DPI 变化时重新定位。
-- ZCode 不是前台窗口、最小化、关闭或客户区不可用时隐藏 overlay；恢复前台后显示。
+- ZCode 不是前台窗口、最小化、关闭或客户区不可用时隐藏 ZCode overlay；恢复前台后显示。
 - overlay 使用 `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`，不抢焦点、不显示任务栏按钮、不拦截 ZCode 鼠标操作。
 
 ## 显示内容
 
-- overlay 只显示 ZCode 数据源的第一条速度行，避免把 Codex 行显示在 ZCode 窗口上。
+- 简略面板显示全局多模型摘要。
+- 详情面板显示完整统计页。
+- ZCode overlay 只显示当前会话当前模型的速度；标题提示包含会话标题和模型名。
 - 无有效速度时显示 `— t/s`。
 - 速度数据继续使用当前 Token Details 统计口径；本次不新增实时 token 计数。
 
 ## 验收场景
 
-1. 启动 ZCode 后启动 Token Details，overlay 出现在 ZCode Header 右侧。
-2. 移动 ZCode，overlay 位置跟随。
-3. 调整 ZCode 窗口大小或最大化/还原，overlay 仍在 Header 内正确锚定。
-4. ZCode 最小化或切换到其他应用，overlay 隐藏；恢复 ZCode 前台后重新显示。
-5. 将 ZCode 移到不同 DPI 显示器，overlay 尺寸和位置重新换算。
-6. overlay 点击不会阻止 ZCode 操作；`--standalone` 模式仍可用原把手拖动测试。
-7. 退出 Token Details 不影响 ZCode；退出/更新 ZCode 不修改 Token Details 文件。
+1. 默认启动后同时存在 `Token Details` 和 `Token Details ZCode`；托盘详情打开 `Token Details 详情`。
+2. ZCode 当前会话有完成请求时，ZCode overlay 显示该会话当前模型速度。
+3. 切换到另一个已有会话，overlay 下一次刷新切换到新会话；旧会话速度不残留。
+4. 当前会话切换模型后，overlay 只显示新模型；新模型无历史时显示 `—`。
+5. 移动 ZCode，overlay 位置跟随。
+6. 调整 ZCode 窗口大小或最大化/还原，overlay 仍在 Header 内正确锚定。
+7. ZCode 最小化或切换到其他应用，overlay 隐藏；恢复 ZCode 前台后重新显示。
+8. 将 ZCode 移到不同 DPI 显示器，overlay 尺寸和位置重新换算。
+9. overlay 点击不会阻止 ZCode 操作；`--standalone` 模式仍可用原把手拖动测试。
+10. 退出 Token Details 不影响 ZCode；退出/更新 ZCode 不修改 Token Details 文件。

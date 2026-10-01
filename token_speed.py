@@ -18,6 +18,7 @@ import html
 import os
 import json
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -32,8 +33,9 @@ CACHE_BILL = 0.1  # 缓存读按 1 折计费（供应商通用口径），ponyta
 TOK_PER_CHAR = 0.6  # 字符→token 估算系数（2026-09-23 对回报正常的模型标定，0.3~1.6 的中位）
 CHART_N = 20   # 柱状图条数
 LOG = None  # --log-file PATH：内容变化时追加一帧，测试观察口
-TITLE = "Token Details"          # 主窗/托盘名（HTML <title> 必须与其一致，FindWindowW 锚点）
-DETAIL_TITLE = "Token Details 详情"
+TITLE = "Token Details"          # 简略面板标题
+DETAIL_TITLE = "Token Details 详情"  # 详情面板标题
+ZCODE_PANEL_TITLE = "Token Details ZCode"  # 当前 ZCode 会话 overlay 标题
 ZCODE_TITLE = "ZCode"             # 当前 ZCode 桌面窗口标题
 OVERLAY_WIDTH = 178                # Header 内速度胶囊的逻辑宽度
 OVERLAY_HEIGHT = 32                # Header 内速度胶囊的逻辑高度
@@ -366,6 +368,21 @@ def fmt_cells(row, provs, est=None):
 
 
 def self_check():
+    # 会话/模型隔离：当前模型提示只允许返回同一 session 的该模型。
+    sdb = sqlite3.connect(":memory:")
+    sdb.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_archived INTEGER, time_updated INTEGER)")
+    sdb.execute("CREATE TABLE model_usage (id, provider_id, model_id, status, started_at, first_token_at, completed_at, duration_ms, output_tokens, reasoning_tokens, query_source, session_id)")
+    sdb.execute("CREATE TABLE message (session_id, data, time_updated)")
+    sdb.execute("INSERT INTO session VALUES ('s1','会话一',NULL,2)")
+    sdb.execute("INSERT INTO message VALUES ('s1', ?, 2)", (json.dumps({"role":"assistant","modelId":"new-model"}),))
+    sdb.executemany("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [
+        ("u1", "p", "old-model", "completed", 1000, 1100, 3000, 2000, 100, 0, "main_turn", "s1"),
+        ("u2", "p", "new-model", "completed", 4000, 4100, 6000, 2000, 200, 0, "main_turn", "s1"),
+    ])
+    srow = session_speed_data(sdb, "s1", {"p":"P"}, model_hint="new-model")
+    assert srow["title"] == "会话一" and len(srow["models"]) == 1
+    assert srow["models"][0]["model"] == "new-model"
+    sdb.close()
     # overlay 定位：客户区右上角锚定，DPI 变化只影响逻辑间距换算。
     assert overlay_position(100, 200, 1000, 800, 96, 178, 32) == (790, 208)
     assert overlay_position(100, 200, 1000, 800, 144, 267, 48) == (635, 212)
@@ -808,6 +825,114 @@ def _last_act(db):
         return {}
 
 
+def session_speed_data(db, session_id, provs, limit=8, model_hint=""):
+    """当前会话的速度行：按 UI 当前模型过滤，切换模型后不沿用旧模型。"""
+    if not session_id:
+        return None
+    current_model = model_hint.strip()
+    if not current_model:
+        try:
+            row = db.execute(
+                "SELECT COALESCE(json_extract(data,'$.modelId'), "
+                "json_extract(data,'$.modelID')) FROM message "
+                "WHERE session_id=? AND json_extract(data,'$.role')='assistant' "
+                "ORDER BY time_updated DESC LIMIT 1", (session_id,)).fetchone()
+            current_model = (row[0] or "") if row else ""
+        except sqlite3.Error:
+            pass
+    query = (
+        f"SELECT {COLS} FROM model_usage "
+        "WHERE session_id=? AND status='completed' AND query_source!='compact' "
+    )
+    params = [session_id]
+    if current_model:
+        query += "AND model_id=? "
+        params.append(current_model)
+    query += "ORDER BY COALESCE(completed_at, started_at) DESC LIMIT ?"
+    params.append(TABLE_N)
+    rows = db.execute(query, params).fetchall()
+    est = _est_map(db, rows)
+    by = {}
+    for row in rows:
+        if current_model and row[2] != current_model:
+            continue
+        c = calc(row, est)
+        if c:
+            by.setdefault(row[2], []).append((row, c))
+    models = []
+    for model, values in by.items():
+        recent = values[:limit]
+        if not recent:
+            continue
+        total_tok = sum((r[8] or 0) + (r[9] or 0) or (est or {}).get(r[0], 0)
+                        for r, _ in recent)
+        elapsed = sum(_elapsed_ms(r) for r, _ in recent)
+        if elapsed <= 0:
+            continue
+        row = recent[0][0]
+        c = fmt_cells(row, provs, est)
+        tps = total_tok * 1000.0 / elapsed
+        models.append({"model": model, "prov": c[2], "when": c[0],
+                       "last": row[6] or row[4], "tps": f"{tps:.1f}",
+                       "tpsV": round(tps), "tok": c[6], "cnt": len(recent),
+                       "session": session_id})
+    models.sort(key=lambda x: x["last"] or 0, reverse=True)
+    title = db.execute("SELECT title FROM session WHERE id=?", (session_id,)).fetchone()
+    return {"session": session_id, "title": (title[0] if title else session_id),
+            "model": current_model, "models": models}
+
+
+def zcode_context():
+    """读取 ZCode Header 当前任务标题和模型选择，供会话 overlay 绑定。"""
+    if os.name != "nt":
+        return {"title": "", "model": ""}
+    try:
+        script = r'''$ErrorActionPreference="Stop"; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes;
+$p=Get-Process ZCode -ErrorAction Stop | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1;
+if(!$p){throw "ZCode main window not found"};
+$root=[System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle);
+$bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
+$buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model="";
+foreach($e in $buttons){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){ $model=$e.Current.Name; break }}
+$tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
+$texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
+foreach($e in $texts){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 500 -and $r.Left -lt 1800 -and $r.Width -ge 250 -and $r.Width -le 700 -and $e.Current.Name.Length -lt 160 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
+[pscustomobject]@{title=$title;model=$model}|ConvertTo-Json -Compress'''
+        cp = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
+                             "-WindowStyle", "Hidden", "-Command", script],
+                            capture_output=True, timeout=3.0)
+        raw = cp.stdout or b""
+        if cp.returncode != 0:
+            detail = (cp.stderr or b"").decode("mbcs", errors="replace").strip()
+            raise RuntimeError(detail or f"PowerShell exited with code {cp.returncode}")
+        try:
+            output = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            output = raw.decode("mbcs", errors="replace")
+        data = json.loads(output.strip() or "{}")
+        model = str(data.get("model") or "").strip()
+        if "/" in model:
+            model = model.rsplit("/", 1)[-1].strip()
+        return {"title": str(data.get("title") or "").strip(), "model": model}
+    except Exception as e:
+        errlog("uia-context", e)
+        return {"title": "", "model": ""}
+
+
+def zcode_session_title():
+    """兼容旧调用：返回当前 ZCode Header 任务标题。"""
+    return zcode_context()["title"]
+
+
+def find_session_by_title(db, title):
+    if not title:
+        return ""
+    rows = db.execute(
+        "SELECT id FROM session WHERE title=? AND time_archived IS NULL "
+        "ORDER BY time_updated DESC LIMIT 1", (title,)).fetchall()
+    return rows[0][0] if rows else ""
+
+
 def detail_data(db, provs, tool="zcode"):
     """面板 + 详情三页共用的一次取数（push_loop 每秒 / 详情打开 / 热更同源）。"""
     cutoff = time.time() * 1000 - 90 * 1000  # 90s 无活动不显示（用户 2026-09-11 改定）
@@ -1141,8 +1266,8 @@ function update(d){
 </script></body></html>"""
 
 
-OVERLAY_HTML = """<!doctype html><html><head><meta charset="utf-8">
-<title>Token speed</title><style>
+ZCODE_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<title>Token Details ZCode</title><style>
 *{margin:0;box-sizing:border-box}
 html,body{width:100%;height:100%;overflow:hidden;background:transparent}
 body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
@@ -1161,11 +1286,12 @@ body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function cls(v){return v>=80?"fast":(v>=50?"mid":"slow")}
 function update(d){
-  var r=(d.rows&&d.rows.length)?d.rows[0]:null;
+  var r=(d.models&&d.models.length)?d.models[0]:null;
   var value=document.getElementById("value"), unit=document.getElementById("unit");
-  if(!r){value.className="empty";value.textContent="—";unit.textContent="t/s";return}
+  if(!r){value.className="empty";value.textContent="—";unit.textContent="t/s";
+    document.getElementById("badge").title=d.title?esc(d.title):"当前会话暂无速度数据";return}
   value.className=cls(r.tpsV);value.innerHTML=esc(r.tps);unit.textContent=" t/s";
-  document.getElementById("badge").title=esc(r.model)+" · "+esc(r.prov);
+  document.getElementById("badge").title=esc(d.title)+" · "+esc(r.model)+" · "+esc(r.prov);
 }
 </script></body></html>"""
 
@@ -1176,9 +1302,8 @@ def run_web(db):
     provs = provider_names()
     standalone = "--standalone" in sys.argv
     set_per_monitor_dpi_awareness()
-    panel_html = HTML if standalone else OVERLAY_HTML
-    panel_width = 250 if standalone else OVERLAY_WIDTH
-    panel_height = 118 if standalone else OVERLAY_HEIGHT
+    panel_width = 250
+    panel_height = 118
 
     u32 = ctypes.WinDLL("user32", use_last_error=True)
 
@@ -1251,14 +1376,14 @@ def run_web(db):
         u32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
         u32.SetLayeredWindowAttributes(hwnd, 0, 232, 2)
 
-    def sync_overlay_loop():
-        """按 ZCode 客户区同步 overlay；隐藏时不抢焦点、不挡其它窗口。"""
+    def sync_zcode_overlay_loop():
+        """同步独立 ZCode 会话面板；简略面板始终保持独立窗口。"""
         if standalone:
             return
         last = None
         while True:
             try:
-                overlay = u32.FindWindowW(None, TITLE)
+                overlay = u32.FindWindowW(None, ZCODE_PANEL_TITLE)
                 target = find_zcode_window()
                 active = target and u32.GetForegroundWindow() == target
                 visible = bool(target and active and not u32.IsIconic(target))
@@ -1287,8 +1412,9 @@ def run_web(db):
                     u32.ShowWindow(overlay, SW_HIDE)
                     last = None
             except Exception as e:
-                errlog("overlay", e)
+                errlog("zcode-overlay", e)
             time.sleep(0.1)
+
     GRIP_X, GRIP_Y, GRIP_W, GRIP_H = 4, 8, 26, 26
 
     def hover_loop():
@@ -1360,19 +1486,25 @@ def run_web(db):
                         pass
                 if tool:
                     cur_tool[0] = tool
-                # 简略面板双源同显（2026-09-30 定稿）：ZCode 行在前、Codex 行在后，
-                # Codex 行 prov 标 Codex 天然区分；详情三页仍跟随详情窗下拉（cur_tool）。
-                dz = detail_data(db, provider_names(), "zcode")  # 每秒重读：配置可能后于面板启动更新
+                dz = detail_data(db, provider_names(), "zcode")
                 dc = detail_data(codex_db(), {"codex": "Codex"}, "codex")
                 D = dc if cur_tool[0] == "codex" else dz
                 panel_rows = dz["models"] + dc["models"]
                 sig = str([(m["model"], m["prov"], m["tps"]) for m in panel_rows])
-                if sig != last_sig[0]:  # 行集合变了才记，转瞬即逝的显示可回查
+                if sig != last_sig[0]:
                     last_sig[0] = sig
                     trace(sig)
-                payload_rows = panel_rows if standalone else dz["models"]
-                payload = json.dumps({"rows": payload_rows}, ensure_ascii=False)
-                w.evaluate_js(f"update({payload})")
+                if standalone:
+                    w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
+                else:
+                    w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
+                    zctx = zcode_context()
+                    sid = find_session_by_title(db, zctx["title"])
+                    zdata = session_speed_data(
+                        db, sid, provider_names(), model_hint=zctx["model"])
+                    zpayload = zdata or {"session": "", "title": zctx["title"],
+                                         "model": zctx["model"], "models": []}
+                    zw.evaluate_js(f"update({json.dumps(zpayload, ensure_ascii=False)})")
                 # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）
                 pages = json.dumps({"ov": page_ov(D), "spd": page_spd(D),
                                     "tok": page_tok(D)},
@@ -1392,7 +1524,7 @@ def run_web(db):
                     except Exception:
                         pass  # 窗口已关闭 → 移除
                 detail_win[:] = alive
-                if standalone and not w.hidden:  # overlay 定位由 sync_overlay_loop 负责
+                if standalone and not w.hidden:
                     # 高度随内容自适应：亮色卡有边框/内边距，按 body 整体实测
                     h_css = w.evaluate_js("document.body.offsetHeight")
                     hwnd = u32.FindWindowW(None, TITLE)
@@ -1433,9 +1565,14 @@ def run_web(db):
             pystray.MenuItem("退出", on_quit))
         pystray.Icon("zcode_tps", img, TITLE, menu).run()
 
-    w = webview.create_window(TITLE, html=panel_html, width=panel_width,
+    w = webview.create_window(TITLE, html=HTML, width=panel_width,
                               height=panel_height, frameless=True, on_top=True,
                               transparent=True)
+    zw = None
+    if not standalone:
+        zw = webview.create_window(ZCODE_PANEL_TITLE, html=ZCODE_HTML,
+                                   width=OVERLAY_WIDTH, height=OVERLAY_HEIGHT,
+                                   frameless=True, on_top=True, transparent=True)
     # overlay 模式由 ZCode 前台状态决定显示；standalone 模式按原逻辑显示。
     if standalone:
         w.events.closing += lambda: (w.hide(), False)[1]  # × = 隐藏到托盘
@@ -1456,7 +1593,9 @@ def run_web(db):
         exec(compile(open(src_file, encoding="utf-8").read(), src_file, "exec"), ns)
         globals().update(ns)
         LOG = flag  # exec 把模块级 LOG 重置为 None，update 后还原 --log-file 状态
-        w.load_html(OVERLAY_HTML if not standalone else HTML)
+        w.load_html(HTML)
+        if not standalone:
+            zw.load_html(ZCODE_HTML)
         if cur_tool[0] == "codex":
             D = detail_data(codex_db(), {"codex": "Codex"}, "codex")
         else:
@@ -1500,7 +1639,7 @@ def run_web(db):
         hicon = u32.LoadImageW(None, ico, 1, 0, 0, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
         if not hicon:
             return
-        titles = (TITLE, DETAIL_TITLE)
+        titles = (TITLE, DETAIL_TITLE, ZCODE_PANEL_TITLE)
 
         def cb(h, _):
             buf = ctypes.create_unicode_buffer(64)
@@ -1516,25 +1655,30 @@ def run_web(db):
             time.sleep(3)
 
     def panel_watchdog():
-        # 任务栏右键关闭等路径会直接销毁窗口（绕过 closing 事件）。只要进程活着，
-        # 3 秒内自动重建简略面板（含图标），面板永不消失。
-        nonlocal w
+        # 简略面板和 ZCode 会话面板分别看门狗重建，详情窗由 detail_win 持有。
+        nonlocal w, zw
         while True:
             time.sleep(3)
             try:
                 if not u32.FindWindowW(None, TITLE):
                     w = webview.create_window(
-                        TITLE, html=panel_html, width=panel_width,
+                        TITLE, html=HTML, width=panel_width,
                         height=panel_height, frameless=True, on_top=True,
                         transparent=True)
                     w.events.closing += lambda: (w.hide(), False)[1]
+                    set_window_icon()
+                if not standalone and not u32.FindWindowW(None, ZCODE_PANEL_TITLE):
+                    zw = webview.create_window(
+                        ZCODE_PANEL_TITLE, html=ZCODE_HTML,
+                        width=OVERLAY_WIDTH, height=OVERLAY_HEIGHT,
+                        frameless=True, on_top=True, transparent=True)
                     set_window_icon()
             except Exception as e:
                 errlog("watchdog", e)
 
     threading.Thread(target=set_window_icon, daemon=True).start()
     threading.Thread(target=panel_watchdog, daemon=True).start()
-    threading.Thread(target=sync_overlay_loop, daemon=True).start()
+    threading.Thread(target=sync_zcode_overlay_loop, daemon=True).start()
     threading.Thread(target=hover_loop, daemon=True).start()
     threading.Thread(target=tray_loop, daemon=True).start()
     if "--detail" in sys.argv:  # 测试钩子：4s 后自动打开详情（同托盘点击代码路径）
