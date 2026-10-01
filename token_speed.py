@@ -392,6 +392,15 @@ def self_check():
     assert find_session_by_title(sdb, "会话一") == "s1"
     assert find_session_by_title(sdb, "不存在的标题内容") == ""
     assert find_session_by_title(sdb, "") == ""
+    # 标题读不到（UIA 空转）时兜底绑定最近活跃会话：窗口外/已归档不算
+    now_ms = int(time.time() * 1000)
+    sdb.execute("INSERT INTO session VALUES ('s3','最近活跃会话',NULL,?)",
+                (now_ms - 60 * 1000,))
+    sdb.execute("INSERT INTO session VALUES ('s4','过气会话',NULL,?)",
+                (now_ms - 11 * 60 * 1000,))
+    assert fallback_session(sdb) == "s3"
+    sdb.execute("UPDATE session SET time_archived=1 WHERE id='s3'")
+    assert fallback_session(sdb) == ""
     sdb.close()
     # overlay 定位：优先贴在“选择打开方式”按钮左侧（间距 OVERLAY_GAP=40），
     # 避免退回到错误的右下角位置。
@@ -918,7 +927,8 @@ if(!$model -and $r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"
 if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$r.Left,[int]$r.Top,[int]$r.Width,[int]$r.Height)}}
 $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
 $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
-foreach($e in $texts){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 60 -and $r.Left -lt 2500 -and $r.Width -ge 200 -and $r.Width -le 900 -and $e.Current.Name.Length -ge 8 -and $e.Current.Name.Length -lt 200 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
+if($texts.Count -eq 0){$texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
+foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 60 -and $r.Left -lt 2500 -and $r.Width -ge 120 -and $r.Width -le 900 -and $e.Current.Name.Length -ge 8 -and $e.Current.Name.Length -lt 200 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
 [pscustomobject]@{title=$title;model=$model;anchor=$anchor}|ConvertTo-Json -Compress'''
         cp = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
                              "-Command", script],
@@ -973,6 +983,15 @@ def find_session_by_title(db, title):
         "AND time_archived IS NULL ORDER BY time_updated DESC LIMIT 1",
         (like,)).fetchall()
     return rows[0][0] if rows else ""
+
+
+def fallback_session(db, window_ms=10 * 60 * 1000):
+    """标题读不到时的兜底绑定：最近活跃的未归档会话（10 分钟内）。"""
+    row = db.execute(
+        "SELECT id FROM session WHERE time_archived IS NULL "
+        "AND time_updated >= ? ORDER BY time_updated DESC LIMIT 1",
+        (time.time() * 1000 - window_ms,)).fetchone()
+    return row[0] if row else ""
 
 
 def detail_data(db, provs, tool="zcode"):
@@ -1400,7 +1419,7 @@ def run_web(db):
         d = ImageDraw.Draw(img)
         # 14 CSS px：Semibold 缺文件时由降级链落到 Bold；尺寸回到与标题同级
         fv = overlay_font("segoeuisb", max(8, round(h * 14 / 32)))
-        fu = overlay_font("segoeui", max(8, round(h * 10 / 32)))
+        fu = overlay_font("segoeui", max(8, round(h * 12 / 32)))  # 单位 12 CSS px
         gap = max(1, round(5 * h / 32))
         wu = d.textlength(spec["unit"], font=fu)
         x_r = max(0, round(w - wu - gap - 2 * h / 32))
@@ -1668,15 +1687,25 @@ def run_web(db):
                 if not standalone:
                     zctx = zcode_context()
                     if zctx.get("anchor"):
-                        # UIA 本轮健康（超时/异常走 except 返回全空，anchor 必为 None），
-                        # 标题/模型以本轮为准——含合法的空标题
                         overlay_anchor[0] = zctx["anchor"]
-                        uia_last[0] = zctx
+                        # FindAll(Text) 在 ZCode 忙时会整批空转——anchor/模型正常但
+                        # 标题为空（实测 dump 零元素）；标题/模型为空沿用上次值，
+                        # 否则一次部分失败就把会话绑定清成 0
+                        if not zctx["title"]:
+                            zctx["title"] = uia_last[0]["title"]
+                        if not zctx["model"]:
+                            zctx["model"] = uia_last[0]["model"]
+                        uia_last[0] = {"title": zctx["title"], "model": zctx["model"]}
                     else:
                         # weberr.log 实测 UIA 超时会成串出现（3s 预算整段 TimeoutExpired），
                         # 此时沿用上次健康值，否则锚点被清空 → overlay 每轮闪没
                         zctx = uia_last[0]
                     sid = find_session_by_title(db, zctx["title"])
+                    if not sid:
+                        # UIA 的 Text 查询在 ZCode 忙时间歇空转（元素整批消失），
+                        # 冷启动连 uia_last 都没有值可粘：标题读不到时退而绑定
+                        # 最近活跃会话；切换会话后标题一旦可读，上面的匹配立即纠正
+                        sid = fallback_session(db)
                     zdata = session_speed_data(
                         db, sid, provider_names(), model_hint=zctx["model"])
                     zpayload = zdata or {"session": "", "title": zctx["title"],
@@ -1894,15 +1923,12 @@ def run_web(db):
 
 
 def single_instance():
-    """已有一个监控窗口时，二次启动只聚焦已有窗口并退出。"""
+    """已有实例在跑时，二次启动静默退出。不得 SW_RESTORE+SetForegroundWindow：
+    那会把默认隐藏的简略面板弹到前台并抢走系统焦点——用户正在别的窗口时
+    被突然切走（测试脚本反复重启时每启一次抢一次）。面板由托盘左键唤出。"""
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    u32 = ctypes.WinDLL("user32", use_last_error=True)
     k32.CreateMutexW(None, False, "TokenDetails_Mutex")
     if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
-        hwnd = u32.FindWindowW(None, TITLE)
-        if hwnd:
-            u32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            u32.SetForegroundWindow(hwnd)
         sys.exit(0)
 
 
