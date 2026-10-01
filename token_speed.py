@@ -20,6 +20,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -984,37 +985,62 @@ def zcode_session_title():
     return zcode_context()["title"]
 
 
-# 常驻 UIA 观察进程（用户 2026-10-02 改定：切换会话 ~0.5s 内换数）。旧路径在
-# push_loop 里每秒新起 PowerShell（实测单次 ~1s：进程启动+加载自动化程序集+
-# 遍历控件树），切换会话后最坏 2-3s 才换数，还拖慢面板刷新节奏。
-# 控件遍历逻辑与 zcode_context 的脚本保持一致，两处改动要同步。
+# 常驻 UIA 观察进程（用户 2026-10-02 改定：切换会话 ≤0.15s 换数）。旧路径在
+# push_loop 里每秒新起 PowerShell（进程启动+程序集加载 ~0.5s），且实测整树
+# FindAll 遍历本身就要 0.5-3.5s（ZCode 忙时更慢），切换会话后最坏 2-3s 才换数。
+# 结构：首次全量走树后缓存标题/模型/锚点三个元素引用，平时每 150ms 只读这 3 个
+# 元素的实时属性（~10ms，窗口拖动/会话切换即时可见），每 2s 兜底全量重走
+# （WebView2 重渲染会换掉元素引用）。控件过滤与 zcode_context 保持一致，两处同步改。
 UIA_WATCH_SCRIPT = r'''$ErrorActionPreference="Stop"; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes;
-$root=$null; $hwnd0=[int64]0;
+$root=$null; $hwnd0=[int64]0; $ae=$null; $te=$null; $me=$null; $lw=[DateTime]::MinValue; $lwt=0;
+function Emit($t,$m,$a){ [Console]::Out.WriteLine(([pscustomobject]@{title=$t;model=$m;anchor=$a}|ConvertTo-Json -Compress)); [Console]::Out.Flush() }
+function Walk($r){
+  $global:ae=$null; $global:te=$null; $global:me=$null;
+  $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
+  $buttons=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null;
+  foreach($e in $buttons){$rc=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
+  if(!$model -and $rc.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){$model=$e.Current.Name; $global:me=$e};
+  if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$rc.Left,[int]$rc.Top,[int]$rc.Width,[int]$rc.Height); $global:ae=$e}}
+  $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
+  $texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
+  if($texts.Count -eq 0){$texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
+  foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $rc=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $rc.Top -ge 0 -and $rc.Top -le 120 -and $rc.Left -ge 60 -and $rc.Left -lt 2500 -and $rc.Width -ge 120 -and $rc.Width -le 900 -and $e.Current.Name.Length -ge 8 -and $e.Current.Name.Length -lt 200 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name; $global:te=$e}}
+  [pscustomobject]@{t=$title;m=$model;a=$anchor}
+}
 while($true){
   try{
     $p=Get-Process ZCode -ErrorAction Stop | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1;
     if(!$p){throw "ZCode main window not found"};
-    if([int64]$p.MainWindowHandle -ne $hwnd0){$hwnd0=[int64]$p.MainWindowHandle; $root=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd0)};
-    $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
-    $buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null;
-    foreach($e in $buttons){$r=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
-    if(!$model -and $r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){$model=$e.Current.Name};
-    if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$r.Left,[int]$r.Top,[int]$r.Width,[int]$r.Height)}}
-    $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
-    $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
-    if($texts.Count -eq 0){$texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
-    foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 60 -and $r.Left -lt 2500 -and $r.Width -ge 120 -and $r.Width -le 900 -and $e.Current.Name.Length -ge 8 -and $e.Current.Name.Length -lt 200 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
-    $o=[pscustomobject]@{title=$title;model=$model;anchor=$anchor}|ConvertTo-Json -Compress
-  }catch{
-    $root=$null;  # 缓存的根元素/窗口句柄失效（ZCode 重建窗口），下轮重锚
-    $o=[pscustomobject]@{title="";model="";anchor=$null}|ConvertTo-Json -Compress
-  }
-  [Console]::Out.WriteLine($o);
-  [Console]::Out.Flush();
-  Start-Sleep -Milliseconds 250
+    if([int64]$p.MainWindowHandle -ne $hwnd0){$hwnd0=[int64]$p.MainWindowHandle; $root=$null};
+    $age=([DateTime]::Now-$lw).TotalMilliseconds;
+    # 兜底间隔自适应：上次走树 >3s（ZCode 流式渲染时实测可达 12s+）就拉长到
+    # 15s，忙时不连续空走；元素引用仍每 150ms 读实时值，切换检测不受影响
+    $bs = 2000; if($lwt -gt 3000){$bs = 15000};
+    if($null -eq $root -or $age -gt $bs){
+      if($null -eq $root){$root=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd0)};
+      Emit "" "" $null;  # 全量走树前先发心跳：慢走不能饿死喂狗
+      $t0=[DateTime]::Now;
+      $w=Walk $root;
+      $lwt=([DateTime]::Now-$t0).TotalMilliseconds;
+      Emit $w.t $w.m $w.a; $lw=[DateTime]::Now
+    } elseif($null -ne $te -and $null -ne $ae) {
+      try{
+        $ar=$ae.Current.BoundingRectangle;
+        $mn=""; if($null -ne $me){$mn=$me.Current.Name};
+        Emit $te.Current.Name $mn @([int]$ar.Left,[int]$ar.Top,[int]$ar.Width,[int]$ar.Height)
+      }catch{ $root=$null; Emit "" "" $null }  # 元素被重渲染换掉 → 下轮全量重走
+    } else {
+      Emit "" "" $null  # 上次全量没找齐关键元素（如草稿无标题）：等兜底重走，
+                        # 不立即再走整树（会连续空烧 CPU）
+    }
+  }catch{ $root=$null; $ae=$null; $te=$null; $me=$null; Emit "" "" $null }
+  Start-Sleep -Milliseconds 150
 }'''
 
 uia_watch = [{"title": "", "model": "", "anchor": None, "ts": 0.0}]
+uia_last = [{"title": "", "model": ""}]  # 最近一次健康的 UIA 标题/模型（粘滞用）
+overlay_anchor = [None]  # UIA 最近一次成功的“选择打开方式”按钮屏幕坐标
+overlay_payload = [None]  # binder 线程写入的会话速度数据，同步线程读取渲染
 _uia_proc = [None]
 
 
@@ -1052,6 +1078,7 @@ def _watcher_loop():
                 creationflags=subprocess.CREATE_NO_WINDOW)
             _uia_proc[0] = proc
             spawn_ts = time.time()
+            last_line = [0.0]  # 本次 spawn 私有：跨重启的旧 ts 会把新进程秒杀
 
             def reader():
                 for line in proc.stdout:
@@ -1059,14 +1086,16 @@ def _watcher_loop():
                     if z is not None:
                         z["ts"] = time.time()
                         uia_watch[0] = z
+                        last_line[0] = time.time()
 
             th = threading.Thread(target=reader, daemon=True)
             th.start()
             while th.is_alive():
                 th.join(1.0)
-                ts = uia_watch[0]["ts"]
-                if (ts and time.time() - ts > 3.0) or \
-                        (not ts and time.time() - spawn_ts > 10):
+                # 阈值 25s：全量走树在 ZCode 流式渲染时实测可达 12s+（走树前
+                # 已有心跳行垫底），阈值太小会把慢走误判成挂死反复重启
+                ref = last_line[0] or spawn_ts
+                if time.time() - ref > 25.0:
                     errlog("uia-watch", f"stalled {time.time() - max(ts, spawn_ts):.0f}s, restart")
                     proc.kill()
             backoff = 1.0
@@ -1719,10 +1748,9 @@ def run_web(db):
             return None
         return origin.x, origin.y, width, height
 
-    overlay_anchor = [None]  # UIA 最近一次成功的“选择打开方式”按钮屏幕坐标
     anchor_rel = [None]      # 按钮相对客户区右缘/顶缘偏移，UIA 失败时兜底定位
-    uia_last = [{"title": "", "model": ""}]  # 最近一次健康的 UIA 标题/模型
-    overlay_payload = [None]  # push_loop 写入的会话速度数据，同步线程读取渲染
+    # overlay_anchor/overlay_payload/uia_last 提升为模块级：binder 线程（模块级
+    # 函数）与 sync 闭包共享同一份数据
 
     def sync_zcode_overlay_loop():
         """同步独立 ZCode 会话面板；简略面板始终保持独立窗口。"""
