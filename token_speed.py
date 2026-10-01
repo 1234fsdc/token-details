@@ -394,6 +394,7 @@ def self_check():
                             [2200, 300, 60, 84]) == (1921, 318)
     assert "background:rgba(25,30,38,.86)" not in ZCODE_HTML
     assert "background:transparent" in ZCODE_HTML and "box-shadow:none" in ZCODE_HTML
+    assert 'textContent="0"' in ZCODE_HTML  # 空会话显示 0 t/s，不得隐藏或显示占位符
     # 无 UIA 锚点时保留纯函数兼容回退；实际同步循环会隐藏 overlay。
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
@@ -910,8 +911,11 @@ $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $t
 foreach($e in $texts){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 500 -and $r.Left -lt 1800 -and $r.Width -ge 250 -and $r.Width -le 700 -and $e.Current.Name.Length -lt 160 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
 [pscustomobject]@{title=$title;model=$model;anchor=$anchor}|ConvertTo-Json -Compress'''
         cp = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
-                             "-WindowStyle", "Hidden", "-Command", script],
-                            capture_output=True, timeout=3.0)
+                             "-Command", script],
+                            capture_output=True, timeout=3.0,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+        # CREATE_NO_WINDOW：控制台从创建起就不存在；-WindowStyle Hidden 要等 PS
+        # 启动后才生效，每秒一次的探测会不停闪黑框（用户实测）
         raw = cp.stdout or b""
         if cp.returncode != 0:
             detail = (cp.stderr or b"").decode("mbcs", errors="replace").strip()
@@ -1287,14 +1291,14 @@ ZCODE_HTML = """<!doctype html><html><head><meta charset="utf-8">
 html,body{width:100%;height:100%;overflow:hidden;background:transparent}
 body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
   display:flex;align-items:center;justify-content:flex-end;user-select:none}
-#badge{height:28px;min-width:0;padding:0;border:0;border-radius:0;background:transparent;color:#f5f7fa;display:flex;
-  align-items:center;justify-content:center;gap:6px;box-shadow:none;
-  font-size:12px;font-weight:600;line-height:1;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.9),0 0 2px rgba(0,0,0,.9)}
+#badge{height:28px;min-width:0;padding:0;border:0;border-radius:0;background:transparent;color:#11151a;display:flex;
+  align-items:center;justify-content:center;gap:5px;box-shadow:none;
+  font-size:12px;font-weight:600;line-height:1;white-space:nowrap}
 #value{font-family:Bahnschrift,"Segoe UI Variable Display","Segoe UI",sans-serif;
   font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
-#unit{font-size:10px;color:#c7ced8;font-weight:400}
-.empty{color:#c7ced8;font-size:11px;font-weight:400}
-.fast{color:#8ce3b0}.mid{color:#ffd18a}.slow{color:#ff9b9b}
+#unit{font-size:10px;color:#6b7280;font-weight:400}
+.empty{color:#6b7280;font-size:11px;font-weight:400}
+.fast{color:#15803d}.mid{color:#b45309}.slow{color:#b91c1c}
 </style></head><body><div id="badge"><span id="value" class="empty">—</span><span id="unit">t/s</span></div>
 <script>
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
@@ -1302,8 +1306,8 @@ function cls(v){return v>=80?"fast":(v>=50?"mid":"slow")}
 function update(d){
   var r=(d.models&&d.models.length)?d.models[0]:null;
   var value=document.getElementById("value"), unit=document.getElementById("unit");
-  if(!r){value.className="empty";value.textContent="—";unit.textContent="t/s";
-    document.getElementById("badge").title=d.title?esc(d.title):"当前会话暂无速度数据";return}
+  if(!r){value.className="empty";value.textContent="0";unit.textContent=" t/s";
+    document.getElementById("badge").title="当前会话暂无已完成的请求";return}
   value.className=cls(r.tpsV);value.innerHTML=esc(r.tps);unit.textContent=" t/s";
   document.getElementById("badge").title=esc(d.title)+" · "+esc(r.model)+" · "+esc(r.prov);
 }
@@ -1388,9 +1392,13 @@ def run_web(db):
         else:
             ex &= ~WS_EX_TRANSPARENT & 0xFFFFFFFF
         u32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
-        u32.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
+        # WebView2 + LWA_ALPHA：255 实测会出现整窗内容不合成（透明方案 memory 记录），
+        # 232 为此前验证稳定的值；背景靠 CSS transparent，透明观感不受影响
+        u32.SetLayeredWindowAttributes(hwnd, 0, 232, 2)
 
-    overlay_anchor = [None]
+    overlay_anchor = [None]  # UIA 最近一次成功的“选择打开方式”按钮屏幕坐标
+    anchor_rel = [None]      # 按钮相对客户区右缘/顶缘偏移，UIA 失败时兜底定位
+    uia_last = [{"title": "", "model": ""}]  # 最近一次健康的 UIA 标题/模型
 
     def sync_zcode_overlay_loop():
         """同步独立 ZCode 会话面板；简略面板始终保持独立窗口。"""
@@ -1412,6 +1420,14 @@ def run_web(db):
                         scale = dpi / 96.0
                         panel_w = round(OVERLAY_WIDTH * scale)
                         panel_h = round(OVERLAY_HEIGHT * scale)
+                        if overlay_anchor[0]:
+                            ax, ay, aw, ah = overlay_anchor[0]
+                            anchor_rel[0] = (cx + cw - ax, ay - cy, aw, ah)
+                        elif anchor_rel[0]:
+                            # UIA 失败期：按上次相对偏移 + 当前客户区推出按钮位置，
+                            # 按钮贴 Header 右侧，用右缘距离不受窗口宽度变化影响
+                            dx, dy, aw, ah = anchor_rel[0]
+                            overlay_anchor[0] = [cx + cw - dx, cy + dy, aw, ah]
                         if not overlay_anchor[0]:
                             u32.ShowWindow(overlay, SW_HIDE)
                             last = None
@@ -1522,7 +1538,15 @@ def run_web(db):
                 else:
                     w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
                     zctx = zcode_context()
-                    overlay_anchor[0] = zctx.get("anchor")
+                    if zctx.get("anchor"):
+                        # UIA 本轮健康（超时/异常走 except 返回全空，anchor 必为 None），
+                        # 标题/模型以本轮为准——含合法的空标题
+                        overlay_anchor[0] = zctx["anchor"]
+                        uia_last[0] = zctx
+                    else:
+                        # weberr.log 实测 UIA 超时会成串出现（3s 预算整段 TimeoutExpired），
+                        # 此时沿用上次健康值，否则锚点被清空 → overlay 每轮闪没
+                        zctx = uia_last[0]
                     sid = find_session_by_title(db, zctx["title"])
                     zdata = session_speed_data(
                         db, sid, provider_names(), model_hint=zctx["model"])
