@@ -401,6 +401,12 @@ def self_check():
     assert fallback_session(sdb) == "s3"
     sdb.execute("UPDATE session SET time_archived=1 WHERE id='s3'")
     assert fallback_session(sdb) == ""
+    # overlay 空闲归零判活：取会话最新 assistant 活动时间
+    assert session_last_act(sdb, "s1") == 2
+    assert session_last_act(sdb, "no-such-session") == 0
+    sdb.execute("UPDATE message SET time_updated=? WHERE session_id='s1'",
+                (int(time.time() * 1000),))
+    assert session_last_act(sdb, "s1") >= int(time.time() * 1000) - 1000
     sdb.close()
     # overlay 定位：优先贴在“选择打开方式”按钮左侧（间距 OVERLAY_GAP=40），
     # 避免退回到错误的右下角位置。
@@ -992,6 +998,19 @@ def fallback_session(db, window_ms=10 * 60 * 1000):
         "AND time_updated >= ? ORDER BY time_updated DESC LIMIT 1",
         (time.time() * 1000 - window_ms,)).fetchone()
     return row[0] if row else ""
+
+
+def session_last_act(db, session_id):
+    """会话最新 assistant 活动时间（ms，生成中也算，流式期间持续刷新）。
+    只看 assistant 行：用户停留打字不算活动。表缺失/无活动返回 0。"""
+    try:
+        row = db.execute(
+            "SELECT MAX(time_updated) FROM message "
+            "WHERE session_id=? AND json_extract(data,'$.role')='assistant'",
+            (session_id,)).fetchone()
+        return (row[0] or 0) if row else 0
+    except sqlite3.Error:
+        return 0
 
 
 def detail_data(db, provs, tool="zcode"):
@@ -1708,6 +1727,13 @@ def run_web(db):
                         sid = fallback_session(db)
                     zdata = session_speed_data(
                         db, sid, provider_names(), model_hint=zctx["model"])
+                    # overlay 口径（用户 2026-10-02 改定）：会话 90s 内无 assistant
+                    # 活动即视为空闲，速度归零——对齐面板 90s 规则，简略/详情不变。
+                    # 按 message.time_updated 判活（同面板 _last_act 道理）：长回合
+                    # 生成中没有新完成行，但 message 持续刷新，不会误归零
+                    if zdata and zdata["models"] and session_last_act(
+                            db, sid) < time.time() * 1000 - 90 * 1000:
+                        zdata = None
                     zpayload = zdata or {"session": "", "title": zctx["title"],
                                          "model": zctx["model"], "models": []}
                     overlay_payload[0] = zpayload  # 同步线程每 0.1s 取走重绘层叠窗口
