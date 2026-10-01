@@ -386,6 +386,12 @@ def self_check():
     srow = session_speed_data(sdb, "s1", {"p":"P"}, model_hint="new-model")
     assert srow["title"] == "会话一" and len(srow["models"]) == 1
     assert srow["models"][0]["model"] == "new-model"
+    # 标题绑定：Header 省略号截断串要能前缀匹配回完整 title
+    sdb.execute("INSERT INTO session VALUES ('s2','这是一个很长很长的会话标题用来测试Header省略号截断',NULL,3)")
+    assert find_session_by_title(sdb, "这是一个很长很长的会话标题用来测试Header省略号…") == "s2"
+    assert find_session_by_title(sdb, "会话一") == "s1"
+    assert find_session_by_title(sdb, "不存在的标题内容") == ""
+    assert find_session_by_title(sdb, "") == ""
     sdb.close()
     # overlay 定位：优先贴在“选择打开方式”按钮左侧（间距 OVERLAY_GAP=40），
     # 避免退回到错误的右下角位置。
@@ -912,7 +918,7 @@ if(!$model -and $r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"
 if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$r.Left,[int]$r.Top,[int]$r.Width,[int]$r.Height)}}
 $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
 $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
-foreach($e in $texts){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 500 -and $r.Left -lt 1800 -and $r.Width -ge 250 -and $r.Width -le 700 -and $e.Current.Name.Length -lt 160 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
+foreach($e in $texts){$r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 60 -and $r.Left -lt 2500 -and $r.Width -ge 200 -and $r.Width -le 900 -and $e.Current.Name.Length -ge 8 -and $e.Current.Name.Length -lt 200 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
 [pscustomobject]@{title=$title;model=$model;anchor=$anchor}|ConvertTo-Json -Compress'''
         cp = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
                              "-Command", script],
@@ -948,11 +954,24 @@ def zcode_session_title():
 
 
 def find_session_by_title(db, title):
+    """标题精确匹配优先。Header 会按宽度省略号截断（UIA 读到的是显示串，
+    不一定等于 DB 里的完整 title），去掉省略号后按前缀匹配最近会话。"""
     if not title:
         return ""
     rows = db.execute(
         "SELECT id FROM session WHERE title=? AND time_archived IS NULL "
         "ORDER BY time_updated DESC LIMIT 1", (title,)).fetchall()
+    if rows:
+        return rows[0][0]
+    base = title.replace("...", "…").rstrip("…")
+    if len(base) < 8:  # 太短的前缀会误配到无关会话
+        return ""
+    like = (base.replace("\\", "\\\\").replace("%", "\\%")
+            .replace("_", "\\_") + "%")
+    rows = db.execute(
+        "SELECT id FROM session WHERE title LIKE ? ESCAPE '\\' "
+        "AND time_archived IS NULL ORDER BY time_updated DESC LIMIT 1",
+        (like,)).fetchall()
     return rows[0][0] if rows else ""
 
 
@@ -1560,10 +1579,9 @@ def run_web(db):
     GRIP_X, GRIP_Y, GRIP_W, GRIP_H = 4, 8, 26, 26
 
     def hover_loop():
-        # standalone 模式保留原把手拖拽；overlay 模式由 ZCode 同步循环定位。
-        if not standalone:
-            return
-        # 三态：悬停把手区=解除穿透+可拖；面板其余=永久穿透。
+        # 简略面板三态：悬停把手区=解除穿透+可拖；面板其余=永久穿透。
+        # 48d1784 曾对非 standalone 直接 return——overlay 定位在
+        # sync_zcode_overlay_loop，与此无关；早退会让主面板丢失 alpha 和穿透。
         # 拖拽靠全局鼠标状态轮询（pywebview 拖拽通道在此环境不通），启动后独立运行。
         time.sleep(2)
         while True:

@@ -17,6 +17,7 @@
 ## 当前会话与模型绑定
 
 - 每秒通过 Windows UI Automation 读取 ZCode Header 当前任务标题、当前模型按钮和“选择打开方式”按钮 bounds。
+- 标题绑定：精确匹配优先；Header 会按宽度省略号截断（UIA 读到显示串），去掉省略号后按前缀匹配最近未归档会话（前缀 ≥8 字符，LIKE 转义）。
 - overlay 锚定在“选择打开方式”按钮左侧 40 CSS px，随该按钮的真实屏幕坐标移动，不再使用固定右侧边距猜测。
 - overlay 宿主为原生层叠窗口（`TokenDetailsOverlay` 类，专用线程创建并自泵消息）：PIL 把速度文字渲染成每像素 alpha 位图经 `UpdateLayeredWindow` 合成，窗口内除文字外零像素，无任何底色/边框/阴影。
 - 不用浏览器窗口渲染 overlay：WebView2 的 CSS 透明在本机只能透到 WinForms 宿主的 #F0F0F0 底色，无法做到“无底色只有文字”。
