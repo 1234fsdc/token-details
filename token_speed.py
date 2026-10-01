@@ -2,7 +2,7 @@
 """Token Details（原 ZCode Token 速度监控）v4 — 图形窗口
 
 用法:
-  python token_speed.py              跟随 ZCode Header 的速度 overlay + 详情三页
+  python token_speed.py              默认只显示 ZCode 会话 overlay；简略面板经托盘菜单开关，详情三页在托盘“详情”
   python token_speed.py --standalone 自由悬浮面板（无 ZCode 目标时的兼容模式）
   python token_speed.py --once       打印一帧数据后退出
   python token_speed.py --self-check 跑 tps 计算与三页渲染断言
@@ -1654,10 +1654,9 @@ def run_web(db):
                 if sig != last_sig[0]:
                     last_sig[0] = sig
                     trace(sig)
-                if standalone:
+                if w:
                     w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
-                else:
-                    w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
+                if not standalone:
                     zctx = zcode_context()
                     if zctx.get("anchor"):
                         # UIA 本轮健康（超时/异常走 except 返回全空，anchor 必为 None），
@@ -1693,7 +1692,7 @@ def run_web(db):
                     except Exception:
                         pass  # 窗口已关闭 → 移除
                 detail_win[:] = alive
-                if standalone and not w.hidden:
+                if standalone and w and not w.hidden:
                     # 高度随内容自适应：亮色卡有边框/内边距，按 body 整体实测
                     h_css = w.evaluate_js("document.body.offsetHeight")
                     hwnd = u32.FindWindowW(None, TITLE)
@@ -1721,7 +1720,22 @@ def run_web(db):
             d.ellipse((16, 16, 48, 48), outline="#b7ead4", width=3)
             d.text((24, 22), "T", fill="#b7ead4")
 
+        def panel_visible():
+            hwnd = u32.FindWindowW(None, TITLE)
+            return bool(hwnd and u32.IsWindowVisible(hwnd))
+
+        def on_toggle_panel(icon, item):
+            # 托盘勾选开关简略面板（用户 2026-10-01：默认只出 ZCode overlay）
+            if panel_visible():
+                panel_pref[0] = False
+                w.hide()
+            else:
+                panel_pref[0] = True
+                ensure_panel()
+                w.show()
+
         def on_show(icon, item):
+            ensure_panel()
             w.show()
 
         def on_quit(icon, item):
@@ -1729,21 +1743,44 @@ def run_web(db):
             os._exit(0)  # push_loop 可能卡在已销毁窗口的 COM 上，_exit 兜底
 
         menu = pystray.Menu(
+            pystray.MenuItem("简略面板", on_toggle_panel,
+                             checked=lambda item: panel_visible()),
             pystray.MenuItem("详情", on_detail),
             pystray.MenuItem("显示", on_show, default=True),
             pystray.MenuItem("退出", on_quit))
         pystray.Icon("zcode_tps", img, TITLE, menu).run()
 
-    w = webview.create_window(TITLE, html=HTML, width=panel_width,
-                              height=panel_height, frameless=True, on_top=True,
-                              transparent=True)
+    # 守护窗口：pywebview 要求 start 前至少存在一个窗口；隐藏的非透明 1x1 窗口
+    # 不会触发透明 hack 的 form.Show()，永远不可见。简略面板则完全按需创建。
+    webview.create_window("Token Details Host", html="<html><body></body></html>",
+                          width=1, height=1, hidden=True)
+    w = None
+    if standalone:
+        w = webview.create_window(TITLE, html=HTML, width=panel_width,
+                                  height=panel_height, frameless=True, on_top=True,
+                                  transparent=True)
+    panel_pref = [standalone]  # 简略面板期望可见态；overlay 模式默认不显示（用户 2026-10-01）
+
+    # × = 隐藏到托盘
+    def on_panel_closing():
+        panel_pref[0] = False
+        if w:
+            w.hide()
+        return False
+
+    def ensure_panel():
+        """简略面板按需创建：不能用 create_window(hidden=True)——pywebview 的
+        透明 hack 会在导航开始时 form.Show() 把窗口重新显示出来（实测）。"""
+        nonlocal w
+        if u32.FindWindowW(None, TITLE):
+            return
+        w = webview.create_window(
+            TITLE, html=HTML, width=panel_width, height=panel_height,
+            frameless=True, on_top=True, transparent=True)
+        w.events.closing += on_panel_closing
+        set_window_icon()
     if not standalone:
         create_overlay_window()
-    # overlay 模式由 ZCode 前台状态决定显示；standalone 模式按原逻辑显示。
-    if standalone:
-        w.events.closing += lambda: (w.hide(), False)[1]  # × = 隐藏到托盘
-    else:
-        w.events.closing += lambda: (w.hide(), False)[1]
     detail_win = []
     cur_tool = ["zcode"]  # 工具切换：详情窗下拉设置，面板全局跟随（push_loop 每秒轮询）
     # 热更新只在源码运行时可用：exe 打包后主脚本不落盘（__file__ 指向不存在路径）
@@ -1759,7 +1796,8 @@ def run_web(db):
         exec(compile(open(src_file, encoding="utf-8").read(), src_file, "exec"), ns)
         globals().update(ns)
         LOG = flag  # exec 把模块级 LOG 重置为 None，update 后还原 --log-file 状态
-        w.load_html(HTML)
+        if w:
+            w.load_html(HTML)
         if cur_tool[0] == "codex":
             D = detail_data(codex_db(), {"codex": "Codex"}, "codex")
         else:
@@ -1819,18 +1857,17 @@ def run_web(db):
             time.sleep(3)
 
     def panel_watchdog():
-        # 简略面板看门狗重建；ZCode overlay 为原生层叠窗口，丢了同样重建。
+        # 简略面板按用户偏好看门狗重建（托盘关掉时不弹回）；overlay 为原生窗口
         nonlocal w
         while True:
             time.sleep(3)
             try:
-                if not u32.FindWindowW(None, TITLE):
-                    w = webview.create_window(
-                        TITLE, html=HTML, width=panel_width,
-                        height=panel_height, frameless=True, on_top=True,
-                        transparent=True)
-                    w.events.closing += lambda: (w.hide(), False)[1]
-                    set_window_icon()
+                if not u32.FindWindowW(None, "Token Details Host"):
+                    webview.create_window("Token Details Host",
+                                          html="<html><body></body></html>",
+                                          width=1, height=1, hidden=True)
+                if panel_pref[0] and not u32.FindWindowW(None, TITLE):
+                    ensure_panel()
                 if not standalone and not u32.FindWindowW(None, ZCODE_PANEL_TITLE):
                     create_overlay_window()
             except Exception as e:
