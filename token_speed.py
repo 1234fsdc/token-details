@@ -41,7 +41,7 @@ OVERLAY_WIDTH = 178                # Header 内速度胶囊的逻辑宽度
 OVERLAY_HEIGHT = 32                # Header 内速度胶囊的逻辑高度
 OVERLAY_HEADER_HEIGHT = 48         # ZCode WorkspaceHeader 的 h-12
 OVERLAY_RIGHT_MARGIN = 132         # 无 UIA 锚点时的兼容回退
-OVERLAY_GAP = 8                    # 速度文字与“选择打开方式”按钮的间距
+OVERLAY_GAP = 40                   # 速度文字与“选择打开方式”按钮的间距（用户要求偏左）
 ERRLOG = r"C:/Users/Public/weberr.log"  # 调试日志，errlog() 内超 1MB 截断
 
 
@@ -387,14 +387,18 @@ def self_check():
     assert srow["title"] == "会话一" and len(srow["models"]) == 1
     assert srow["models"][0]["model"] == "new-model"
     sdb.close()
-    # overlay 定位：优先贴在“选择打开方式”按钮左侧，避免退回到错误的右下角位置。
+    # overlay 定位：优先贴在“选择打开方式”按钮左侧（间距 OVERLAY_GAP=40），
+    # 避免退回到错误的右下角位置。
     assert overlay_position(0, 0, 2880, 1524, 96, 178, 32,
-                            [2372, 30, 40, 56]) == (2186, 42)
+                            [2372, 30, 40, 56]) == (2154, 42)
     assert overlay_position(100, 200, 1000, 800, 144, 267, 48,
-                            [2200, 300, 60, 84]) == (1921, 318)
-    assert "background:rgba(25,30,38,.86)" not in ZCODE_HTML
-    assert "background:transparent" in ZCODE_HTML and "box-shadow:none" in ZCODE_HTML
-    assert 'textContent="0"' in ZCODE_HTML  # 空会话显示 0 t/s，不得隐藏或显示占位符
+                            [2200, 300, 60, 84]) == (1873, 318)
+    # overlay 渲染要素：空数据显示 0（用户改定），文字统一 Header 墨水色
+    spec = overlay_text({"models": [{"tps": "92.0", "tpsV": 92}]})
+    assert spec["value"] == "92.0" and spec["rgb"] == OVERLAY_INK
+    assert overlay_text({"models": [{"tps": "46.4", "tpsV": 46}]})["rgb"] == OVERLAY_INK
+    assert overlay_text(None)["value"] == "0" and overlay_text({})["value"] == "0"
+    assert overlay_text({})["rgb"] == OVERLAY_MUTED
     # 无 UIA 锚点时保留纯函数兼容回退；实际同步循环会隐藏 overlay。
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
@@ -1285,33 +1289,18 @@ function update(d){
 </script></body></html>"""
 
 
-ZCODE_HTML = """<!doctype html><html><head><meta charset="utf-8">
-<title>Token Details ZCode</title><style>
-*{margin:0;box-sizing:border-box}
-html,body{width:100%;height:100%;overflow:hidden;background:transparent}
-body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
-  display:flex;align-items:center;justify-content:flex-end;user-select:none}
-#badge{height:28px;min-width:0;padding:0;border:0;border-radius:0;background:transparent;color:#11151a;display:flex;
-  align-items:center;justify-content:center;gap:5px;box-shadow:none;
-  font-size:12px;font-weight:600;line-height:1;white-space:nowrap}
-#value{font-family:Bahnschrift,"Segoe UI Variable Display","Segoe UI",sans-serif;
-  font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
-#unit{font-size:10px;color:#6b7280;font-weight:400}
-.empty{color:#6b7280;font-size:11px;font-weight:400}
-.fast{color:#15803d}.mid{color:#b45309}.slow{color:#b91c1c}
-</style></head><body><div id="badge"><span id="value" class="empty">—</span><span id="unit">t/s</span></div>
-<script>
-function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
-function cls(v){return v>=80?"fast":(v>=50?"mid":"slow")}
-function update(d){
-  var r=(d.models&&d.models.length)?d.models[0]:null;
-  var value=document.getElementById("value"), unit=document.getElementById("unit");
-  if(!r){value.className="empty";value.textContent="0";unit.textContent=" t/s";
-    document.getElementById("badge").title="当前会话暂无已完成的请求";return}
-  value.className=cls(r.tpsV);value.innerHTML=esc(r.tps);unit.textContent=" t/s";
-  document.getElementById("badge").title=esc(d.title)+" · "+esc(r.model)+" · "+esc(r.prov);
-}
-</script></body></html>"""
+# overlay 配色（ZCode 浅色 Header）：文字用 Header 原生墨水色，空态/单位用灰
+OVERLAY_INK = (0x11, 0x15, 0x1A)
+OVERLAY_MUTED = (0x6B, 0x72, 0x80)
+
+
+def overlay_text(zdata):
+    """会话速度数据 → overlay 绘制要素（纯函数，自检覆盖）。
+    无有效记录显示 0（用户 2026-10-01 改定：显示零而不是隐藏）。"""
+    rows = (zdata or {}).get("models") or []
+    if not rows:
+        return {"value": "0", "unit": " t/s", "rgb": OVERLAY_MUTED}
+    return {"value": rows[0]["tps"], "unit": " t/s", "rgb": OVERLAY_INK}
 
 
 def run_web(db):
@@ -1343,6 +1332,133 @@ def run_web(db):
     SWP_NOOWNERZORDER = 0x0200
     SWP_SHOWWINDOW = 0x0040
     HWND_TOPMOST = ctypes.c_void_p(-1)
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+
+    class SIZE(ctypes.Structure):
+        _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+    class BLENDFUNCTION(ctypes.Structure):
+        _fields_ = [("BlendOp", ctypes.c_byte), ("BlendFlags", ctypes.c_byte),
+                    ("SourceConstantAlpha", ctypes.c_byte),
+                    ("AlphaFormat", ctypes.c_byte)]
+
+    class BMIHEADER(ctypes.Structure):
+        _fields_ = [("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_long),
+                    ("biHeight", ctypes.c_long), ("biPlanes", ctypes.c_uint16),
+                    ("biBitCount", ctypes.c_uint16), ("biCompression", ctypes.c_uint32),
+                    ("biSizeImage", ctypes.c_uint32), ("biXPelsPerMeter", ctypes.c_long),
+                    ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", ctypes.c_uint32),
+                    ("biClrImportant", ctypes.c_uint32)]
+
+    overlay_font_cache = {}
+
+    def overlay_font(name, px):
+        key = (name, px)
+        if key not in overlay_font_cache:
+            from PIL import ImageFont
+            try:
+                overlay_font_cache[key] = ImageFont.truetype(
+                    "C:/Windows/Fonts/" + name + ".ttf", px)
+            except Exception as e:
+                errlog("overlay-font", e)
+                overlay_font_cache[key] = ImageFont.load_default()
+        return overlay_font_cache[key]
+
+    def draw_overlay(hwnd, x, y, w, h, spec):
+        """速度文字渲染成每像素 alpha 位图并 ULW 到层叠窗口：除文字外无任何像素。"""
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        fv = overlay_font("segoeuib", max(8, round(h * 14 / 32)))
+        fu = overlay_font("segoeui", max(8, round(h * 10 / 32)))
+        gap = max(1, round(5 * h / 32))
+        wv = d.textlength(spec["value"], font=fv)
+        wu = d.textlength(spec["unit"], font=fu)
+        x0 = max(0, round(w - wv - gap - wu - 2 * h / 32))
+        cy = h // 2
+        d.text((x0, cy), spec["value"], font=fv,
+               fill=tuple(spec["rgb"]) + (255,), anchor="lm")
+        d.text((x0 + wv + gap, cy), spec["unit"], font=fu,
+               fill=OVERLAY_MUTED + (255,), anchor="lm")
+        r, g, b, a = img.split()
+        from PIL import ImageChops
+        pm = Image.merge("RGBA", (  # ULW 要求预乘 alpha，multiply 即 x*a//255
+            ImageChops.multiply(r, a), ImageChops.multiply(g, a),
+            ImageChops.multiply(b, a), a))
+        raw = pm.tobytes("raw", "BGRA")  # 输出字节序 B,G,R,A
+        hdr = BMIHEADER(ctypes.sizeof(BMIHEADER), w, -h, 1, 32, 0, len(raw), 0, 0, 0, 0)
+        bits = ctypes.c_void_p()
+        hdc_s = u32.GetDC(None)
+        hbmp = gdi32.CreateDIBSection(hdc_s, ctypes.byref(hdr), 0,
+                                      ctypes.byref(bits), None, 0)
+        if not hbmp or not bits:
+            errlog("overlay-ulw", "CreateDIBSection failed")
+            return
+        hdc_m = gdi32.CreateCompatibleDC(hdc_s)
+        old = gdi32.SelectObject(hdc_m, hbmp)
+        ctypes.memmove(bits, raw, len(raw))
+        blend = BLENDFUNCTION(0, 0, 255, 1)  # AC_SRC_OVER, AC_SRC_ALPHA
+        ok = u32.UpdateLayeredWindow(
+            hwnd, hdc_s, ctypes.byref(POINT(x, y)), ctypes.byref(SIZE(w, h)),
+            hdc_m, ctypes.byref(POINT(0, 0)), 0, ctypes.byref(blend), 2)  # ULW_ALPHA
+        gdi32.SelectObject(hdc_m, old)
+        gdi32.DeleteObject(hbmp)
+        gdi32.DeleteDC(hdc_m)
+        u32.ReleaseDC(None, hdc_s)
+        if not ok:
+            errlog("overlay-ulw", ctypes.WinError(ctypes.get_last_error()))
+
+    class WNDCLASSW(ctypes.Structure):
+        _fields_ = [("style", ctypes.c_uint), ("lpfnWndProc", ctypes.c_void_p),
+                    ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+                    ("hInstance", ctypes.c_void_p), ("hIcon", ctypes.c_void_p),
+                    ("hCursor", ctypes.c_void_p), ("hbrBackground", ctypes.c_void_p),
+                    ("lpszMenuName", ctypes.c_wchar_p), ("lpszClassName", ctypes.c_wchar_p)]
+
+    class MSG(ctypes.Structure):
+        _fields_ = [("hwnd", ctypes.c_void_p), ("message", ctypes.c_uint),
+                    ("wParam", ctypes.c_size_t), ("lParam", ctypes.c_ssize_t),
+                    ("time", ctypes.c_uint32), ("pt", POINT)]
+
+    def create_overlay_window():
+        """“只有文字”的 overlay 宿主：层叠窗口 + UpdateLayeredWindow。
+        不用浏览器窗口——WebView2 的 CSS 透明在本机只能透到 WinForms 宿主的
+        #F0F0F0 底色（实测 240 vs 周围 248），达不到“无底色只有文字”。"""
+        u32.CreateWindowExW.argtypes = [
+            ctypes.c_uint32, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        u32.CreateWindowExW.restype = ctypes.c_void_p
+        ex = (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
+              WS_EX_NOACTIVATE | 0x8)  # WS_EX_TOPMOST
+
+        def overlay_thread():
+            # 专属线程创建并泵消息：跨线程 ShowWindow/ULW 要靠本线程的消息循环
+            # 送达；挂到主线程会被 webview 主循环饿死（实测 SetWindowPos 卡死）
+            wc = WNDCLASSW()
+            # 原生 DefWindowProcW 指针直填：纯显示窗口不需要处理消息
+            wc.lpfnWndProc = ctypes.cast(u32.DefWindowProcW, ctypes.c_void_p).value
+            wc.hInstance = k32.GetModuleHandleW(None)
+            wc.lpszClassName = "TokenDetailsOverlay"
+            if not u32.RegisterClassW(ctypes.byref(wc)) and \
+                    ctypes.get_last_error() != 1410:  # CLASS_ALREADY_EXISTS
+                errlog("overlay-class", ctypes.WinError(ctypes.get_last_error()))
+            u32.CreateWindowExW(ex, "TokenDetailsOverlay", ZCODE_PANEL_TITLE,
+                                0x80000000,  # WS_POPUP
+                                0, 0, OVERLAY_WIDTH, OVERLAY_HEIGHT,
+                                None, None, k32.GetModuleHandleW(None), None)
+            msg = MSG()
+            while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                u32.TranslateMessage(ctypes.byref(msg))
+                u32.DispatchMessageW(ctypes.byref(msg))
+
+        threading.Thread(target=overlay_thread, daemon=True).start()
+        for _ in range(50):  # 等窗口真正创建，避免同步循环前几秒找不到
+            time.sleep(0.1)
+            if u32.FindWindowW(None, ZCODE_PANEL_TITLE):
+                return
 
     def find_zcode_window():
         """返回可见的 ZCode 主窗；不依赖屏幕固定坐标。"""
@@ -1384,27 +1500,16 @@ def run_web(db):
             return None
         return origin.x, origin.y, width, height
 
-    def set_overlay_style(hwnd, click_through=True):
-        ex = u32.GetWindowLongW(hwnd, GWL_EXSTYLE) & 0xFFFFFFFF
-        ex = (ex & ~0x00040000 & 0xFFFFFFFF) | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-        if click_through:
-            ex |= WS_EX_TRANSPARENT
-        else:
-            ex &= ~WS_EX_TRANSPARENT & 0xFFFFFFFF
-        u32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
-        # WebView2 + LWA_ALPHA：255 实测会出现整窗内容不合成（透明方案 memory 记录），
-        # 232 为此前验证稳定的值；背景靠 CSS transparent，透明观感不受影响
-        u32.SetLayeredWindowAttributes(hwnd, 0, 232, 2)
-
     overlay_anchor = [None]  # UIA 最近一次成功的“选择打开方式”按钮屏幕坐标
     anchor_rel = [None]      # 按钮相对客户区右缘/顶缘偏移，UIA 失败时兜底定位
     uia_last = [{"title": "", "model": ""}]  # 最近一次健康的 UIA 标题/模型
+    overlay_payload = [None]  # push_loop 写入的会话速度数据，同步线程读取渲染
 
     def sync_zcode_overlay_loop():
         """同步独立 ZCode 会话面板；简略面板始终保持独立窗口。"""
         if standalone:
             return
-        last = None
+        drawn = [None]
         while True:
             try:
                 overlay = u32.FindWindowW(None, ZCODE_PANEL_TITLE)
@@ -1430,26 +1535,24 @@ def run_web(db):
                             overlay_anchor[0] = [cx + cw - dx, cy + dy, aw, ah]
                         if not overlay_anchor[0]:
                             u32.ShowWindow(overlay, SW_HIDE)
-                            last = None
+                            drawn[0] = None
                             time.sleep(0.1)
                             continue
                         x, y = overlay_position(cx, cy, cw, ch, dpi, panel_w, panel_h,
                                                  overlay_anchor[0])
-                        state = (overlay, x, y, panel_w, panel_h, dpi)
-                        set_overlay_style(overlay)
-                        if state != last:
-                            u32.SetWindowPos(
-                                overlay, HWND_TOPMOST, x, y, panel_w, panel_h,
-                                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW)
-                            last = state
-                        else:
-                            u32.ShowWindow(overlay, SW_SHOWNOACTIVATE)
+                        spec = overlay_text(overlay_payload[0])
+                        sig = (spec["value"], spec["rgb"], x, y, panel_w, panel_h)
+                        if sig != drawn[0]:
+                            # ULW 一次带位置/尺寸/内容；数据与几何不变时不重绘
+                            draw_overlay(overlay, x, y, panel_w, panel_h, spec)
+                            drawn[0] = sig
+                        u32.ShowWindow(overlay, SW_SHOWNOACTIVATE)
                     else:
                         u32.ShowWindow(overlay, SW_HIDE)
-                        last = None
+                        drawn[0] = None
                 elif overlay:
                     u32.ShowWindow(overlay, SW_HIDE)
-                    last = None
+                    drawn[0] = None
             except Exception as e:
                 errlog("zcode-overlay", e)
             time.sleep(0.1)
@@ -1552,7 +1655,7 @@ def run_web(db):
                         db, sid, provider_names(), model_hint=zctx["model"])
                     zpayload = zdata or {"session": "", "title": zctx["title"],
                                          "model": zctx["model"], "models": []}
-                    zw.evaluate_js(f"update({json.dumps(zpayload, ensure_ascii=False)})")
+                    overlay_payload[0] = zpayload  # 同步线程每 0.1s 取走重绘层叠窗口
                 # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）
                 pages = json.dumps({"ov": page_ov(D), "spd": page_spd(D),
                                     "tok": page_tok(D)},
@@ -1616,12 +1719,8 @@ def run_web(db):
     w = webview.create_window(TITLE, html=HTML, width=panel_width,
                               height=panel_height, frameless=True, on_top=True,
                               transparent=True)
-    zw = None
     if not standalone:
-        zw = webview.create_window(ZCODE_PANEL_TITLE, html=ZCODE_HTML,
-                                   width=OVERLAY_WIDTH, height=OVERLAY_HEIGHT,
-                                   min_size=(1, 1), frameless=True, on_top=True,
-                                   transparent=True)
+        create_overlay_window()
     # overlay 模式由 ZCode 前台状态决定显示；standalone 模式按原逻辑显示。
     if standalone:
         w.events.closing += lambda: (w.hide(), False)[1]  # × = 隐藏到托盘
@@ -1643,8 +1742,6 @@ def run_web(db):
         globals().update(ns)
         LOG = flag  # exec 把模块级 LOG 重置为 None，update 后还原 --log-file 状态
         w.load_html(HTML)
-        if not standalone:
-            zw.load_html(ZCODE_HTML)
         if cur_tool[0] == "codex":
             D = detail_data(codex_db(), {"codex": "Codex"}, "codex")
         else:
@@ -1704,8 +1801,8 @@ def run_web(db):
             time.sleep(3)
 
     def panel_watchdog():
-        # 简略面板和 ZCode 会话面板分别看门狗重建，详情窗由 detail_win 持有。
-        nonlocal w, zw
+        # 简略面板看门狗重建；ZCode overlay 为原生层叠窗口，丢了同样重建。
+        nonlocal w
         while True:
             time.sleep(3)
             try:
@@ -1717,12 +1814,7 @@ def run_web(db):
                     w.events.closing += lambda: (w.hide(), False)[1]
                     set_window_icon()
                 if not standalone and not u32.FindWindowW(None, ZCODE_PANEL_TITLE):
-                    zw = webview.create_window(
-                        ZCODE_PANEL_TITLE, html=ZCODE_HTML,
-                        width=OVERLAY_WIDTH, height=OVERLAY_HEIGHT,
-                        min_size=(1, 1), frameless=True, on_top=True,
-                        transparent=True)
-                    set_window_icon()
+                    create_overlay_window()
             except Exception as e:
                 errlog("watchdog", e)
 
