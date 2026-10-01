@@ -46,7 +46,7 @@
 - 详情面板显示完整统计页。
 - ZCode overlay 只显示当前会话当前模型的速度（数值 + ` t/s`）。
 - 无有效速度时显示 `0 t/s`（用户 2026-10-01 改定：显示零而不是隐藏）。
-- 配色：数值用 ZCode Header 原生墨水色 `#11151a`，单位/空态灰 `#6b7280`；速度不分档变色。
+- 配色（D 全灰等宽方案）：数字 Segoe UI Semibold 13px、`#5f6368`（与 Header 图标同灰阶，tabular 等宽右对齐锁位），单位 10px `#9aa1ab`，空态 `#b9bfc7`；速度不分档变色。候选方向（B+/E/H/F）及实景对比见 `docs/preview/overlay-style-preview.html`。
 - 速度数据继续使用当前 Token Details 统计口径；本次不新增实时 token 计数。
 
 ## 验收场景

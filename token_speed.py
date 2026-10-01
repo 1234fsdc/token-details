@@ -399,12 +399,12 @@ def self_check():
                             [2372, 30, 40, 56]) == (2154, 42)
     assert overlay_position(100, 200, 1000, 800, 144, 267, 48,
                             [2200, 300, 60, 84]) == (1873, 318)
-    # overlay 渲染要素：空数据显示 0（用户改定），文字统一 Header 墨水色
+    # overlay 渲染要素：空数据显示 0（用户改定），D 方案全灰配色
     spec = overlay_text({"models": [{"tps": "92.0", "tpsV": 92}]})
-    assert spec["value"] == "92.0" and spec["rgb"] == OVERLAY_INK
-    assert overlay_text({"models": [{"tps": "46.4", "tpsV": 46}]})["rgb"] == OVERLAY_INK
+    assert spec["value"] == "92.0" and spec["rgb"] == OVERLAY_VALUE
+    assert overlay_text({"models": [{"tps": "46.4", "tpsV": 46}]})["rgb"] == OVERLAY_VALUE
     assert overlay_text(None)["value"] == "0" and overlay_text({})["value"] == "0"
-    assert overlay_text({})["rgb"] == OVERLAY_MUTED
+    assert overlay_text({})["rgb"] == OVERLAY_EMPTY
     # 无 UIA 锚点时保留纯函数兼容回退；实际同步循环会隐藏 overlay。
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
@@ -1308,9 +1308,10 @@ function update(d){
 </script></body></html>"""
 
 
-# overlay 配色（ZCode 浅色 Header）：文字用 Header 原生墨水色，空态/单位用灰
-OVERLAY_INK = (0x11, 0x15, 0x1A)
-OVERLAY_MUTED = (0x6B, 0x72, 0x80)
+# overlay 配色（D 全灰等宽方案）：数字降到与 Header 图标同灰阶，安静隐入按钮群
+OVERLAY_VALUE = (0x5F, 0x63, 0x68)  # 数字 #5f6368
+OVERLAY_MUTED = (0x9A, 0xA1, 0xAB)  # 单位 #9aa1ab
+OVERLAY_EMPTY = (0xB9, 0xBF, 0xC7)  # 空态 0 更淡一档
 
 
 def overlay_text(zdata):
@@ -1318,8 +1319,8 @@ def overlay_text(zdata):
     无有效记录显示 0（用户 2026-10-01 改定：显示零而不是隐藏）。"""
     rows = (zdata or {}).get("models") or []
     if not rows:
-        return {"value": "0", "unit": " t/s", "rgb": OVERLAY_MUTED}
-    return {"value": rows[0]["tps"], "unit": " t/s", "rgb": OVERLAY_INK}
+        return {"value": "0", "unit": "t/s", "rgb": OVERLAY_EMPTY}
+    return {"value": rows[0]["tps"], "unit": "t/s", "rgb": OVERLAY_VALUE}
 
 
 def run_web(db):
@@ -1390,16 +1391,16 @@ def run_web(db):
         from PIL import Image, ImageDraw
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        fv = overlay_font("segoeuib", max(8, round(h * 14 / 32)))
+        fv = overlay_font("segoeuisb", max(8, round(h * 13 / 32)))  # Semibold 13 CSS px
         fu = overlay_font("segoeui", max(8, round(h * 10 / 32)))
         gap = max(1, round(5 * h / 32))
-        wv = d.textlength(spec["value"], font=fv)
         wu = d.textlength(spec["unit"], font=fu)
-        x0 = max(0, round(w - wv - gap - wu - 2 * h / 32))
+        x_r = max(0, round(w - wu - gap - 2 * h / 32))
         cy = h // 2
-        d.text((x0, cy), spec["value"], font=fv,
-               fill=tuple(spec["rgb"]) + (255,), anchor="lm")
-        d.text((x0 + wv + gap, cy), spec["unit"], font=fu,
+        # 数字右对齐锁位：刷新只变左缘，单位位置固定不左右跳
+        d.text((x_r, cy), spec["value"], font=fv,
+               fill=tuple(spec["rgb"]) + (255,), anchor="rm")
+        d.text((x_r + gap, cy), spec["unit"], font=fu,
                fill=OVERLAY_MUTED + (255,), anchor="lm")
         r, g, b, a = img.split()
         from PIL import ImageChops

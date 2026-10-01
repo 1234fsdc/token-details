@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Token 速度 Header 样式重设计预览 · 第 2 批</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#e9ebee; padding:28px 20px 60px;
+    font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; color:#1f2328;
+  }
+  h1 { font-size:18px; margin-bottom:6px; }
+  .sub { font-size:12px; color:#6b7280; margin-bottom:18px; line-height:1.7; }
+  .controls {
+    display:flex; gap:22px; align-items:center; background:#fff; border:1px solid #e3e5e8;
+    border-radius:10px; padding:10px 16px; margin-bottom:22px; font-size:12.5px; flex-wrap:wrap;
+  }
+  .controls b { font-weight:600; }
+  .controls label { display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .card { margin-bottom:26px; }
+  .card-title { font-size:13px; font-weight:600; margin:0 0 4px 2px; }
+  .card-title .tag { font-weight:400; color:#6b7280; margin-left:8px; font-size:12px; }
+  .card-title .rec { color:#15803d; font-weight:600; }
+  .card-title .warn { color:#b45309; font-weight:400; margin-left:6px; font-size:12px; }
+
+  .win { background:#fdfdfd; border:1px solid #d9dbdf; border-radius:10px; overflow:hidden;
+         box-shadow:0 1px 4px rgba(0,0,0,.06); }
+  .menubar { background:#f2f3f5; padding:4px 10px; display:flex; align-items:center; gap:8px; }
+  .zlogo { width:20px; height:20px; background:#17181a; border-radius:5px; color:#fff;
+           font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center; }
+  .bar-btn { color:#5f6368; font-size:12px; padding:1px 5px; border-radius:4px; }
+  .grow { flex:1; }
+  .wtl { display:flex; gap:2px; }
+  .wtl span { width:30px; text-align:center; color:#5f6368; font-size:11px; }
+
+  .header {
+    height:48px; background:#f8f8f8; display:flex; align-items:center;
+    padding:0 12px 0 14px; gap:8px;
+  }
+  .h-title { font-size:13px; font-weight:600; color:#1f2328; white-space:nowrap;
+             overflow:hidden; text-overflow:ellipsis; }
+  .ghost-btn {
+    width:28px; height:28px; border-radius:6px; display:flex; align-items:center;
+    justify-content:center; color:#5f6368; flex:none;
+  }
+  .ghost-btn svg { width:15px; height:15px; }
+  .pill {
+    height:28px; background:#fff; border:1px solid #e3e5e8; border-radius:8px;
+    display:flex; align-items:center; color:#5f6368; flex:none;
+  }
+  .pill .half { width:30px; height:100%; display:flex; align-items:center; justify-content:center; }
+  .pill .half + .half { border-left:1px solid #eceef0; }
+  .pill svg { width:14px; height:14px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#e98989; flex:none; }
+
+  /* ===== 现状 ===== */
+  .v-cur { display:flex; align-items:baseline; gap:5px; margin-right:40px; flex:none; }
+  .v-cur .n  { font-size:14px; font-weight:700; color:#11151a; }
+  .v-cur .u  { font-size:10px; color:#6b7280; }
+
+  /* ===== B+ 纯文本改良：tabular 锁宽 + 更弱单位 ===== */
+  .v-bp { display:flex; align-items:baseline; gap:4px; margin-right:40px; flex:none; }
+  .v-bp .n { font-size:13px; font-weight:500; color:#30363d;
+             font-variant-numeric:tabular-nums; min-width:38px; text-align:right; }
+  .v-bp .u { font-size:9.5px; color:#9aa1ab; }
+  .v-bp.empty .n { color:#9aa1ab; }
+
+  /* ===== D 全灰等宽：与图标同灰阶，读数即"家具" ===== */
+  .v-d { display:flex; align-items:center; gap:5px; margin-right:40px; flex:none; }
+  .v-d .n { font-size:13px; font-weight:600; color:#5f6368;
+            font-variant-numeric:tabular-nums; min-width:38px; text-align:right; }
+  .v-d .u { font-size:10px; color:#9aa1ab; }
+  .v-d.empty .n { color:#b9bfc7; }
+
+  /* ===== E 双行微标签：上标下值 KPI 式 ===== */
+  .v-e { display:flex; flex-direction:column; align-items:flex-end; margin-right:40px;
+         line-height:1.1; flex:none; }
+  .v-e .l { font-size:8.5px; letter-spacing:.9px; color:#9aa1ab; font-weight:500; }
+  .v-e .n { font-size:14px; font-weight:600; color:#30363d;
+            font-variant-numeric:tabular-nums; }
+  .v-e.empty .n, .v-e.empty .l { color:#b9bfc7; }
+
+  /* ===== H 迷你趋势：sparkline + 数字 ===== */
+  .v-h { display:flex; align-items:center; gap:7px; margin-right:40px; flex:none; }
+  .v-h svg { display:block; }
+  .v-h .n { font-size:12.5px; font-weight:600; color:#30363d; font-variant-numeric:tabular-nums; }
+  .v-h .u { font-size:9.5px; color:#9aa1ab; margin-left:1px; }
+  .v-h.empty .n { color:#9aa1ab; }
+
+  /* ===== F 同族小 pill：白底描边（需放宽"无底色"约束） ===== */
+  .v-f { display:flex; align-items:center; gap:4px; height:24px; padding:0 9px;
+         background:#fff; border:1px solid #e3e5e8; border-radius:7px;
+         margin-right:40px; flex:none; }
+  .v-f .n { font-size:12px; font-weight:600; color:#30363d; font-variant-numeric:tabular-nums; }
+  .v-f .u { font-size:9.5px; color:#9aa1ab; }
+  .v-f.empty .n { color:#9aa1ab; }
+
+  .note { font-size:12px; color:#6b7280; background:#fff; border:1px solid #e3e5e8;
+          border-radius:10px; padding:12px 16px; line-height:1.8; }
+  .note code { background:#f1f2f4; border-radius:4px; padding:1px 5px; font-size:11.5px; }
+</style>
+</head>
+<body>
+
+<h1>Token 速度 Header 样式重设计预览 · 第 2 批</h1>
+<div class="sub">
+  第 1 批（A 图标项 / B 同化 / C 淡胶囊）整体不满意的根因：速度被排成"仪表读数"，而 Header 的语言是<b>安静、低对比、稀疏</b>。
+  本批 5 个新方向围绕这一点重新设计——B 保留并升级为 B+（锁宽数字防抖动），其余走四条不同的路。位置不变（按钮左侧 40px）。
+</div>
+
+<div class="controls">
+  <b>预览状态</b>
+  <label><input type="radio" name="state" value="normal" checked> 正常 42.9</label>
+  <label><input type="radio" name="state" value="empty"> 空态 0</label>
+  <label><input type="radio" name="state" value="fast"> 高速 128.4</label>
+</div>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <g id="i-folder"><path d="M1.6 4.4 c0-.8.6-1.4 1.4-1.4 h3 l1.5 1.5 h5.5 c.8 0 1.4.6 1.4 1.4 v6.2
+      c0 .8-.6 1.4-1.4 1.4 H3 c-.8 0-1.4-.6-1.4-1.4 Z" fill="none" stroke="currentColor"
+      stroke-width="1.4" stroke-linejoin="round"/></g>
+    <g id="i-chev"><polyline points="4.2 6.6 8 10.4 11.8 6.6" fill="none"
+      stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></g>
+    <g id="i-share"><path d="M8 10.2 V2.4 M5 5.2 L8 2.2 l3 3 M3.6 9.6 v3.2 c0 .8.6 1.4 1.4 1.4 h6
+      c.8 0 1.4-.6 1.4-1.4 V9.6" fill="none" stroke="currentColor" stroke-width="1.4"
+      stroke-linecap="round" stroke-linejoin="round"/></g>
+    <g id="i-term"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.6" fill="none"
+      stroke="currentColor" stroke-width="1.4"/><polyline points="4.2 6.2 6.4 8 4.2 9.8"
+      fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+      stroke-linejoin="round"/><line x1="8.4" y1="10.6" x2="11.6" y2="10.6"
+      stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+    <g id="i-panel"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.6" fill="none"
+      stroke="currentColor" stroke-width="1.4"/><line x1="10" y1="2.6" x2="10" y2="13.4"
+      stroke="currentColor" stroke-width="1.4"/></g>
+    <g id="i-dots"><circle cx="3" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8"
+      r="1.2" fill="currentColor"/><circle cx="13" cy="8" r="1.2" fill="currentColor"/></g>
+  </defs>
+</svg>
+
+<div id="cards"></div>
+
+<div class="note">
+  <b>落地说明</b>：全部方案均为纯文字/图形、无背景（F 除外，白底描边 pill 需要你放宽"无底色"约束）。数字统一
+  <code>tabular-nums</code> 等宽并锁最小宽度，每秒刷新时不左右跳；单位统一 9.5-10px 灰
+  <code>#9aa1ab</code>。实现仍走 PIL + UpdateLayeredWindow，只改 <code>overlay_text</code> / <code>draw_overlay</code>（H 需多画 5 根 3px 小柱，数据管线不变）。当前实例的近几次速度即 sparkline 数据源。
+</div>
+
+<script>
+const g = id => `<svg viewBox="0 0 16 16"><use href="#${id}"/></svg>`;
+
+function headerHTML(inner) {
+  return `
+  <div class="win">
+    <div class="menubar">
+      <span class="zlogo">Z</span>
+      <span class="bar-btn">文件(F)</span><span class="bar-btn">编辑(E)</span>
+      <span class="bar-btn">查看(V)</span><span class="bar-btn">帮助(H)</span>
+      <div class="grow"></div>
+      <div class="wtl"><span>—</span><span>□</span><span>✕</span></div>
+    </div>
+    <div class="header">
+      <span class="h-title">规划 zcode 面板 Token 速度模块</span>
+      <span class="ghost-btn">${g("i-dots")}</span>
+      <div class="grow"></div>
+      ${inner}
+      <div class="pill"><div class="half">${g("i-folder")}</div><div class="half">${g("i-chev")}</div></div>
+      <span class="ghost-btn">${g("i-share")}</span>
+      <span class="ghost-btn" style="font-size:13px;font-weight:600">?</span>
+      <span class="ghost-btn">${g("i-term")}</span>
+      <span class="ghost-btn">${g("i-panel")}</span>
+      <span class="dot"></span>
+    </div>
+    <div style="height:64px;background:#fbfbfc"></div>
+  </div>`;
+}
+
+const st = () => document.querySelector('input[name=state]:checked').value;
+const NUM = () => ({ empty:"0", fast:"128.4", normal:"42.9" })[st()];
+const empty = () => st() === "empty" ? " empty" : "";
+
+// sparkline 数据（模拟最近 5 次请求速度，落地时取真实数据）
+const BARS = { normal:[5,8,4,9,6], fast:[7,10,9,11,12], empty:[1,1,1,1,1] };
+function spark() {
+  const h = BARS[st()], mx = Math.max(...h);
+  const rects = h.map((v,i) =>
+    `<rect x="${i*5}" y="${12-v}" width="3" height="${v}" rx="1"
+       fill="${i===h.length-1?'#6b7280':'#b9bfc7'}"/>`).join("");
+  return `<svg width="23" height="12" viewBox="0 0 23 12">${rects}</svg>`;
+}
+
+const speed = kind => {
+  const n = NUM(), e = empty();
+  switch (kind) {
+    case "cur": return `<span class="v-cur"><span class="n">${n}</span><span class="u">t/s</span></span>`;
+    case "bp":  return `<span class="v-bp${e}"><span class="n">${n}</span><span class="u">t/s</span></span>`;
+    case "d":   return `<span class="v-d${e}"><span class="n">${n}</span><span class="u">t/s</span></span>`;
+    case "e":   return `<span class="v-e${e}"><span class="l">TOKEN/S</span><span class="n">${n}</span></span>`;
+    case "h":   return `<span class="v-h${e}">${spark()}<span class="n">${n}</span><span class="u">t/s</span></span>`;
+    case "f":   return `<span class="v-f${e}"><span class="n">${n}</span><span class="u">t/s</span></span>`;
+  }
+};
+
+const CARDS = [
+  { t:"现状", tag:"线上效果，对照组", html:() => headerHTML(speed("cur")) },
+  { t:"B+ 纯文本改良", tag:"你选的 B 的升级——等宽数字锁宽防抖动，单位更弱化，仍墨色", html:() => headerHTML(speed("bp")) },
+  { t:"D 全灰等宽", tag:"数字降到与图标同灰阶 #5f6368——彻底“隐入”按钮群，最安静", rec:true, html:() => headerHTML(speed("d")) },
+  { t:"E 双行微标签", tag:"上行 8.5px 弱标签 TOKEN/S、下行 14px 数值——KPI 式，有设计感，数字最醒目", html:() => headerHTML(speed("e")) },
+  { t:"H 迷你趋势", tag:"5 根 3px 小柱 = 近 5 次请求速度 + 当前值——信息量最大，一眼看趋势", html:() => headerHTML(speed("h")) },
+  { t:"F 同族小 pill", tag:"24px 白底描边胶囊，与“选择打开方式”成同族控件", warn:"需放宽无底色约束", html:() => headerHTML(speed("f")) },
+];
+
+function render() {
+  document.getElementById("cards").innerHTML = CARDS.map(c => `
+    <div class="card">
+      <div class="card-title">${c.t}${c.rec ? ' <span class="rec">← 推荐</span>' : ''}
+        ${c.warn ? `<span class="warn">⚠ ${c.warn}</span>` : ''}
+        <span class="tag">${c.tag}</span></div>
+      ${c.html()}
+    </div>`).join("");
+}
+document.querySelectorAll('input[name=state]').forEach(r => r.addEventListener("change", render));
+render();
+</script>
+</body>
+</html>
