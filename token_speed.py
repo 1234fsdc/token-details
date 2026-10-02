@@ -14,6 +14,7 @@
 计划: token-speed-v4-plan.md
 """
 import ctypes
+import glob
 import html
 import os
 import json
@@ -1081,6 +1082,7 @@ ever_anchored = [False]    # 是否成功锚定过一次（false=冷启动，fal
 overlay_anchor = [None]  # UIA 最近一次成功的“选择打开方式”按钮屏幕坐标
 overlay_payload = [None]  # binder 线程写入的会话速度数据，同步线程读取渲染
 _uia_proc = [None]
+_native_state = {"tried": False, "exe": None}  # C# watcher 编译结果缓存
 
 
 def parse_watcher_line(raw):
@@ -1108,15 +1110,73 @@ def parse_watcher_line(raw):
         return None
 
 
+def native_watcher_cmd():
+    """C# 原生 watcher（token_watcher.exe，~23MB vs PowerShell ~90MB）：exe
+    可用就返回路径；没有则用 Windows 自带 csc（.NET Framework，无需 SDK）
+    现编译一次；编译失败回退 PowerShell 版（返回 None）。exe 比 .cs 旧才重编。"""
+    if _native_state["tried"]:
+        return _native_state["exe"]
+    _native_state["tried"] = True
+    try:
+        if getattr(sys, "frozen", False):
+            base = os.path.dirname(sys.executable)
+        else:
+            base = os.path.dirname(os.path.abspath(__file__))
+        exe = os.path.join(base, "token_watcher.exe")
+        src = os.path.join(base, "token_watcher.cs")
+        if not os.path.exists(src):
+            errlog("native-watch", "token_watcher.cs missing, PS fallback")
+            return None
+        if os.path.exists(exe) and os.path.getmtime(exe) >= os.path.getmtime(src):
+            _native_state["exe"] = exe
+            return exe
+        csc = None
+        for cand in (r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+                     r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"):
+            if os.path.exists(cand):
+                csc = cand
+                break
+        if not csc:
+            errlog("native-watch", "csc.exe not found, PS fallback")
+            return None
+        refs = []
+        for name in ("UIAutomationClient", "UIAutomationTypes", "WindowsBase"):
+            hits = glob.glob(r"C:\Windows\Microsoft.NET\assembly\GAC_MSIL\%s\*\%s.dll"
+                             % (name, name))
+            if not hits:
+                errlog("native-watch", name + " dll not found, PS fallback")
+                return None
+            refs.append("/r:" + hits[0])
+        cp = subprocess.run(
+            [csc, "-nologo", "-target:exe", "-optimize+", "-out:" + exe]
+            + refs + [src],
+            capture_output=True, timeout=120,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        if cp.returncode != 0:
+            errlog("native-watch", "csc failed: "
+                   + (cp.stderr or b"").decode("mbcs", errors="replace")[:300])
+            return None
+        _native_state["exe"] = exe
+        return exe
+    except Exception as e:
+        errlog("native-watch", e)
+        return None
+
+
 def _watcher_loop():
-    """常驻 PowerShell 观察进程的守护：每行输出更新 uia_watch；进程退出或
-    >3s 无输出（ZCode 挂死会阻塞 UIA 同步调用）即杀掉重启，指数退避。"""
+    """常驻观察进程的守护（优先 C# 原生版，编译失败回退 PowerShell）：
+    每行输出更新 uia_watch；进程退出或 >25s 无输出即杀掉重启，指数退避。"""
     backoff = 1.0
     while True:
         try:
+            exe = native_watcher_cmd()
+            if exe:
+                cmd = [exe]
+            else:
+                cmd = ["powershell.exe", "-NoProfile", "-NonInteractive",
+                       "-Command", UIA_WATCH_SCRIPT]
             proc = subprocess.Popen(
-                ["powershell.exe", "-NoProfile", "-NonInteractive",
-                 "-Command", UIA_WATCH_SCRIPT],
+                cmd,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 env={**os.environ, "TDS_PARENT": str(os.getpid())})
