@@ -437,6 +437,12 @@ def self_check():
     assert parse_watcher_line("not json") is None
     # 空行/空 JSON 是合法输出（ZCode 不在时 watcher 的空态），归一为空 zctx
     assert parse_watcher_line("") == {"title": "", "model": "", "anchor": None, "ws": 0}
+    # 空标题消歧：毛刺沿用上次值；持续空（>4s TTL）接受空，宁可 0 不跟错会话
+    assert resolve_title("t", "old", 0.0, 100) == ("t", 0.0)
+    assert resolve_title("", "old", 0.0, 100) == ("old", 100)      # 首次空，开始计时
+    assert resolve_title("", "old", 100, 102) == ("old", 100)      # TTL 内沿用
+    assert resolve_title("", "old", 100, 105) == ("", 100)         # 超 4s 接受空
+    assert resolve_title("", "", 0.0, 100) == ("", 100)            # 从无健康值不沿用
     # 无 UIA 锚点时保留纯函数兼容回退；实际同步循环会隐藏 overlay。
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
@@ -951,7 +957,10 @@ if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$r.Lef
 $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
 $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
 if($texts.Count -eq 0){$texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
-foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $r=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 60 -and $r.Left -lt 2500 -and $r.Width -ge 120 -and $r.Width -le 900 -and $e.Current.Name.Length -ge 8 -and $e.Current.Name.Length -lt 200 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name}}
+foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $r=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue}; $ln=$e.Current.Name.Length; if($ln -lt 2 -or $ln -ge 200 -or $ln -le $title.Length){continue}; $ok=$false;
+if($anchor){ if($r.Width -ge 30 -and [Math]::Abs($r.Top-$anchor[1]) -le 25 -and ($r.Left+$r.Width) -le ($anchor[0]+10) -and $r.Left -ge 60){$ok=$true} };
+if(!$ok -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 60 -and $r.Left -lt 2500 -and $r.Width -ge 120 -and $r.Width -le 900 -and $ln -ge 8){$ok=$true};
+if($ok){$title=$e.Current.Name}}
 [pscustomobject]@{title=$title;model=$model;anchor=$anchor}|ConvertTo-Json -Compress'''
         cp = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
                              "-Command", script],
@@ -1005,7 +1014,10 @@ function Walk($r){
   $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
   $texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
   if($texts.Count -eq 0){$texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
-  foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $rc=$e.Current.BoundingRectangle; if(!$e.Current.IsOffscreen -and $rc.Top -ge 0 -and $rc.Top -le 120 -and $rc.Left -ge 60 -and $rc.Left -lt 2500 -and $rc.Width -ge 120 -and $rc.Width -le 900 -and $e.Current.Name.Length -ge 8 -and $e.Current.Name.Length -lt 200 -and $e.Current.Name.Length -gt $title.Length){$title=$e.Current.Name; $global:te=$e}}
+    foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $rc=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue}; $ln=$e.Current.Name.Length; if($ln -lt 2 -or $ln -ge 200 -or $ln -le $title.Length){continue}; $ok=$false;
+    if($anchor){ if($rc.Width -ge 30 -and [Math]::Abs($rc.Top-$anchor[1]) -le 25 -and ($rc.Left+$rc.Width) -le ($anchor[0]+10) -and $rc.Left -ge 60){$ok=$true} };
+    if(!$ok -and $rc.Top -ge 0 -and $rc.Top -le 120 -and $rc.Left -ge 60 -and $rc.Left -lt 2500 -and $rc.Width -ge 120 -and $rc.Width -le 900 -and $ln -ge 8){$ok=$true};
+    if($ok){$title=$e.Current.Name; $global:te=$e}}
   [pscustomobject]@{t=$title;m=$model;a=$anchor}
 }
 while($true){
@@ -1019,7 +1031,10 @@ while($true){
     $bs = 2000; if($lwt -gt 3000){$bs = 15000};
     if($null -eq $root -or $age -gt $bs){
       if($null -eq $root){$root=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd0)};
-      Emit "" "" $null;  # 全量走树前先发心跳：慢走不能饿死喂狗
+      $ht=""; $hm="";
+      try{ if($te){$ht=$te.Current.Name}; if($me){$hm=$me.Current.Name} }catch{}
+      Emit $ht $hm $null;  # 走树前心跳带最后已知值：慢走（可达 12s+）期间 binder
+                           # 不至于拿到空标题而把运行中会话清成 0
       $t0=[DateTime]::Now;
       $w=Walk $root;
       $lwt=([DateTime]::Now-$t0).TotalMilliseconds;
@@ -1046,6 +1061,8 @@ while($true){
 
 uia_watch = [{"title": "", "model": "", "anchor": None, "ts": 0.0}]
 uia_last = [{"title": "", "model": ""}]  # 最近一次健康的 UIA 标题/模型（粘滞用）
+title_empty_since = [0.0]  # 连续读到空标题的起点（resolve_title TTL 消歧）
+ever_anchored = [False]    # 是否成功锚定过一次（false=冷启动，fallback 才可用）
 overlay_anchor = [None]  # UIA 最近一次成功的“选择打开方式”按钮屏幕坐标
 overlay_payload = [None]  # binder 线程写入的会话速度数据，同步线程读取渲染
 _uia_proc = [None]
@@ -1132,23 +1149,30 @@ def overlay_bind_loop():
                     "anchor": wv["anchor"]}
             if zctx.get("anchor"):
                 overlay_anchor[0] = zctx["anchor"]
-                # FindAll(Text) 在 ZCode 忙时会整批空转——anchor/模型正常但
-                # 标题为空（实测 dump 零元素）；标题/模型为空沿用上次值，
-                # 否则一次部分失败就把会话绑定清成 0
-                if not zctx["title"]:
-                    zctx["title"] = uia_last[0]["title"]
-                if not zctx["model"]:
+                ever_anchored[0] = True
+                # 空标题消歧（resolve_title）：毛刺沿用上次值，持续空（切换到
+                # 无标题/短标题会话、草稿）超过 4s 就接受空——宁可 0 也不把
+                # 旧会话的速度跟过去（用户 2026-10-02 反馈）
+                t, title_empty_since[0] = resolve_title(
+                    zctx["title"], uia_last[0]["title"], title_empty_since[0],
+                    time.time())
+                zctx["title"] = t
+                if t:
+                    uia_last[0]["title"] = t
+                if zctx["model"]:
+                    uia_last[0]["model"] = zctx["model"]
+                else:
                     zctx["model"] = uia_last[0]["model"]
-                uia_last[0] = {"title": zctx["title"], "model": zctx["model"]}
             else:
                 # watcher 全空（ZCode 不在/窗口重建中）时沿用上次健康值，
                 # 否则锚点被清空 → overlay 每轮闪没
-                zctx = uia_last[0]
+                zctx = {"title": uia_last[0]["title"],
+                        "model": uia_last[0]["model"], "anchor": None}
             sid = find_session_by_title(bdb, zctx["title"])
-            if not sid:
-                # UIA 的 Text 查询在 ZCode 忙时间歇空转（元素整批消失），
-                # 冷启动连 uia_last 都没有值可粘：标题读不到时退而绑定
-                # 最近活跃会话；切换会话后标题一旦可读，上面的匹配立即纠正
+            if not sid and not ever_anchored[0]:
+                # 仅冷启动兜底（从未锚定过任何 UIA 数据）：绑定最近活跃会话。
+                # 锚定过之后不能再用——最近活跃几乎总是刚离开的旧会话，会把
+                # 它的速度跟到新会话上（用户 2026-10-02 反馈的 bug 路径）
                 sid = fallback_session(bdb)
             zdata = session_speed_data(
                 bdb, sid, provider_names(), model_hint=zctx["model"])
@@ -1209,6 +1233,18 @@ def session_last_act(db, session_id):
         return (row[0] or 0) if row else 0
     except sqlite3.Error:
         return 0
+
+
+def resolve_title(read_title, last, empty_since, now, ttl=4.0):
+    """空标题消歧（用户 2026-10-02 反馈：切到无速度的会话仍显示旧速度）。
+    短暂读不到（UIA 毛刺/走树间隙）沿用上次值；持续读不到（切到无标题/
+    短标题会话、草稿）超过 ttl 就接受空——宁可显示 0 也不把旧会话的
+    速度跟过去。返回 (标题, 新的 empty_since)。"""
+    if read_title:
+        return read_title, 0.0
+    if last and (not empty_since or now - empty_since <= ttl):
+        return last, (empty_since or now)
+    return "", (empty_since or now)
 
 
 def detail_data(db, provs, tool="zcode"):
