@@ -430,12 +430,13 @@ def self_check():
     assert overlay_text({})["rgb"] == OVERLAY_EMPTY
     # watcher 输出解析：模型 provider 前缀剥离、anchor 容错、bytes 解码、坏行拒绝
     pz = parse_watcher_line('{"title":"会话一","model":"p/new-model","anchor":[1,2,3,4]}')
-    assert pz == {"title": "会话一", "model": "new-model", "anchor": [1, 2, 3, 4]}
+    assert pz == {"title": "会话一", "model": "new-model", "anchor": [1, 2, 3, 4], "ws": 0}
+    assert parse_watcher_line('{"title":"","model":"","anchor":null,"ws":123}')["ws"] == 123
     assert parse_watcher_line('{"title":"","model":"","anchor":null}')["anchor"] is None
     assert parse_watcher_line(b'{"title":"x","model":"m","anchor":[1,2,3,4]}')["title"] == "x"
     assert parse_watcher_line("not json") is None
     # 空行/空 JSON 是合法输出（ZCode 不在时 watcher 的空态），归一为空 zctx
-    assert parse_watcher_line("") == {"title": "", "model": "", "anchor": None}
+    assert parse_watcher_line("") == {"title": "", "model": "", "anchor": None, "ws": 0}
     # 无 UIA 锚点时保留纯函数兼容回退；实际同步循环会隐藏 overlay。
     r = ("x", "p", "m", "completed", 1000, 2000, 3000, 2500, 500, 0)
     tps, ttft, mark = calc(r)
@@ -992,8 +993,8 @@ def zcode_session_title():
 # 元素的实时属性（~10ms，窗口拖动/会话切换即时可见），每 2s 兜底全量重走
 # （WebView2 重渲染会换掉元素引用）。控件过滤与 zcode_context 保持一致，两处同步改。
 UIA_WATCH_SCRIPT = r'''$ErrorActionPreference="Stop"; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes;
-$root=$null; $hwnd0=[int64]0; $ae=$null; $te=$null; $me=$null; $lw=[DateTime]::MinValue; $lwt=0;
-function Emit($t,$m,$a){ [Console]::Out.WriteLine(([pscustomobject]@{title=$t;model=$m;anchor=$a}|ConvertTo-Json -Compress)); [Console]::Out.Flush() }
+$root=$null; $hwnd0=[int64]0; $ae=$null; $te=$null; $me=$null; $lw=[DateTime]::MinValue; $lwt=0; $gws=0; $tick=0;
+function Emit($t,$m,$a){ [Console]::Out.WriteLine(([pscustomobject]@{title=$t;model=$m;anchor=$a;ws=$gws}|ConvertTo-Json -Compress)); [Console]::Out.Flush() }
 function Walk($r){
   $global:ae=$null; $global:te=$null; $global:me=$null;
   $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
@@ -1034,6 +1035,12 @@ while($true){
                         # 不立即再走整树（会连续空烧 CPU）
     }
   }catch{ $root=$null; $ae=$null; $te=$null; $me=$null; Emit "" "" $null }
+  $tick++;
+  if($tick % 200 -eq 0){  # ~30s 一次强制 GC：长循环里 UIA COM 包装（RCW）靠
+                          # 惰性终结释放，实测 35min 涨到 1.2GB；配合 ws 字段熔断
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect();
+    $gws=[int]((Get-Process -Id $PID).PrivateMemorySize64/1MB)
+  }
   Start-Sleep -Milliseconds 150
 }'''
 
@@ -1059,8 +1066,12 @@ def parse_watcher_line(raw):
         anchor = data.get("anchor")
         if not isinstance(anchor, list) or len(anchor) != 4:
             anchor = None
+        try:
+            ws = int(data.get("ws") or 0)
+        except Exception:
+            ws = 0
         return {"title": str(data.get("title") or "").strip(),
-                "model": model, "anchor": anchor}
+                "model": model, "anchor": anchor, "ws": ws}
     except Exception:
         return None
 
@@ -1087,6 +1098,11 @@ def _watcher_loop():
                         z["ts"] = time.time()
                         uia_watch[0] = z
                         last_line[0] = time.time()
+                        # 内存熔断：PS 长跑 RCW 膨胀（实测 1.2GB/35min），脚本内
+                        # 30s 一次 GC 之外再给硬上限，超限杀掉由外层重启重建
+                        if z.get("ws", 0) > 500:
+                            errlog("uia-watch", f"ws {z['ws']}MB, recycle")
+                            proc.kill()
 
             th = threading.Thread(target=reader, daemon=True)
             th.start()
