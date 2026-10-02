@@ -98,8 +98,10 @@ class TokenWatcher
                 bool ok = false;
                 if (anchor != null && rc.Width >= 30 && Math.Abs(rc.Top - anchor[1]) <= 25
                     && (rc.Left + rc.Width) <= anchor[0] + 10 && rc.Left >= 60) ok = true;
-                if (!ok && rc.Top >= 0 && rc.Top <= 120 && rc.Left >= 60 && rc.Left < 2500
-                    && rc.Width >= 120 && rc.Width <= 900 && ln >= 8) ok = true;
+                // 只认锚点同行带。旧绝对带 Top≤120 会把 header 正下方的聊天首行
+                // 当标题（实测 Top=101/len=31 劫持真标题 Top=39/len=27），DB 查
+                // 不到该标题 → 运行中会话显示 0（bind-zero 日志实锤，用户
+                // 2026-10-02 反馈）。无锚点时 binder 本就沿用旧值，兜底带无价值
                 if (ok) { title = n; titleEl = e; found = true; }
             }
             catch { }

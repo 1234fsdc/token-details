@@ -52,8 +52,8 @@ def errlog(tag, exc):
         if os.path.exists(ERRLOG) and os.path.getsize(ERRLOG) > 1_000_000:
             open(ERRLOG, "w").close()
         with open(ERRLOG, "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] [{tag}] "
-                    f"{type(exc).__name__}: {exc}\n")
+            msg = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
+            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] [{tag}] {msg}\n")
     except Exception:
         pass
 
@@ -962,7 +962,6 @@ $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $t
 if($texts.Count -eq 0){$texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
 foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $r=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue}; $ln=$e.Current.Name.Length; if($ln -lt 2 -or $ln -ge 200 -or $ln -le $title.Length){continue}; $ok=$false;
 if($anchor){ if($r.Width -ge 30 -and [Math]::Abs($r.Top-$anchor[1]) -le 25 -and ($r.Left+$r.Width) -le ($anchor[0]+10) -and $r.Left -ge 60){$ok=$true} };
-if(!$ok -and $r.Top -ge 0 -and $r.Top -le 120 -and $r.Left -ge 60 -and $r.Left -lt 2500 -and $r.Width -ge 120 -and $r.Width -le 900 -and $ln -ge 8){$ok=$true};
 if($ok){$title=$e.Current.Name}}
 [pscustomobject]@{title=$title;model=$model;anchor=$anchor}|ConvertTo-Json -Compress'''
         cp = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
@@ -1026,7 +1025,6 @@ function Walk($r){
   if($texts.Count -eq 0){$texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
     foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $rc=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue}; $ln=$e.Current.Name.Length; if($ln -lt 2 -or $ln -ge 200 -or $ln -le $title.Length){continue}; $ok=$false;
     if($anchor){ if($rc.Width -ge 30 -and [Math]::Abs($rc.Top-$anchor[1]) -le 25 -and ($rc.Left+$rc.Width) -le ($anchor[0]+10) -and $rc.Left -ge 60){$ok=$true} };
-    if(!$ok -and $rc.Top -ge 0 -and $rc.Top -le 120 -and $rc.Left -ge 60 -and $rc.Left -lt 2500 -and $rc.Width -ge 120 -and $rc.Width -le 900 -and $ln -ge 8){$ok=$true};
     if($ok){$title=$e.Current.Name; $global:te=$e; $found=$true}}
   if(!$found){ $global:ae=$null; $global:te=$null; $global:me=$null }
   [pscustomobject]@{t=$title;m=$model;a=$anchor}
@@ -1225,6 +1223,7 @@ def overlay_bind_loop():
     查询，0.3s 一拍。db 连接线程私有（sqlite 连接跨线程并发使用不安全）。"""
     bdb = connect()
     last_key = None
+    last_zero_log = 0.0  # 归零原因诊断日志限频
     while True:
         try:
             wv = uia_watch[0]
@@ -1260,7 +1259,12 @@ def overlay_bind_loop():
                 "SELECT MAX(rowid) FROM model_usage").fetchone()[0] or 0
             pr = bdb.execute(
                 "SELECT MAX(rowid) FROM part").fetchone()[0] or 0
-            key = (zctx["title"], zctx["model"], mu, pr)
+            # 时间桶（10s）：纯空闲（无任何会话写库）时 mu/pr/title 全冻结，
+            # key 永不变 → 重算不再触发 → 90s 归零门控再也跑不到，速度冻在
+            # 屏上。桶过期强制每 10s 重算一次（~8ms，开销可忽略），归零口径
+            # 才真正闭环
+            key = (zctx["title"], zctx["model"], mu, pr,
+                   int(time.time() / 10))
             if key != last_key:
                 sid = find_session_by_title(bdb, zctx["title"])
                 if not sid and not ever_anchored[0]:
@@ -1274,15 +1278,33 @@ def overlay_bind_loop():
                 # 对齐面板 90s 规则，简略/详情不变。最近完成请求 <90s 时必然
                 # 活跃，跳过判活查询；更旧时用 part 活动判活——长回合生成中
                 # part 持续写入不会误归零（见 session_last_act），真正停下才归零
+                reason = ""
                 if zdata and zdata["models"]:
                     last_done = zdata["models"][0]["last"] or 0
-                    if last_done < time.time() * 1000 - 90 * 1000 and \
-                            session_last_act(
-                                bdb, sid) < time.time() * 1000 - 90 * 1000:
-                        zdata = None
+                    now_ms = time.time() * 1000
+                    if last_done < now_ms - 90 * 1000:
+                        act = session_last_act(bdb, sid)
+                        if act < now_ms - 90 * 1000:
+                            zdata = None
+                            reason = (f"90s空闲归零 sid={sid} 最近完成"
+                                      f"{(now_ms - last_done) / 1000:.0f}s前 "
+                                      f"part活动{(now_ms - act) / 1000:.0f}s前")
                     last_key = key
+                elif not zctx["title"]:
+                    reason = f"标题空（UIA 读不到超TTL）model={zctx['model']!r}"
+                elif not sid:
+                    reason = f"标题无匹配会话 title={zctx['title']!r}"
+                else:
+                    reason = f"会话无有效请求 sid={sid} model={zctx['model']!r}"
                 zpayload = zdata or {"session": "", "title": zctx["title"],
                                      "model": zctx["model"], "models": []}
+                # 诊断（用户 2026-10-02 反馈"运行中显示 0"）：只在有速度→0 的
+                # 瞬间记一条原因到 weberr.log，60s 限频；复现时按时间对账即可
+                # 定位是哪条路径（标题TTL / 无匹配会话 / 判活归零 / 无数据）
+                if reason and (overlay_payload[0] or {}).get("models") and \
+                        time.time() - last_zero_log > 60:
+                    last_zero_log = time.time()
+                    errlog("bind-zero", reason)
                 overlay_payload[0] = zpayload  # 同步线程每 0.1s 取走重绘层叠窗口
         except Exception as e:
             errlog("bind", e)
