@@ -1001,12 +1001,16 @@ def zcode_session_title():
 # push_loop 里每秒新起 PowerShell（进程启动+程序集加载 ~0.5s），且实测整树
 # FindAll 遍历本身就要 0.5-3.5s（ZCode 忙时更慢），切换会话后最坏 2-3s 才换数。
 # 结构：首次全量走树后缓存标题/模型/锚点三个元素引用，平时每 150ms 只读这 3 个
-# 元素的实时属性（~10ms，窗口拖动/会话切换即时可见），每 2s 兜底全量重走
-# （WebView2 重渲染会换掉元素引用）。控件过滤与 zcode_context 保持一致，两处同步改。
+# 元素的实时属性（~10ms，窗口拖动/会话切换即时可见），每 3s 兜底全量重走
+# （WebView2 重渲染会换掉元素引用）。输出带变更检测：数据没变不发行
+# （走树前心跳强制发，保喂狗）。控件过滤与 zcode_context 保持一致，两处同步改。
 UIA_WATCH_SCRIPT = r'''$ErrorActionPreference="Stop"; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes;
-$root=$null; $hwnd0=[int64]0; $ae=$null; $te=$null; $me=$null; $lw=[DateTime]::MinValue; $lwt=0; $gws=0; $tick=0; $pp=0;
+$root=$null; $hwnd0=[int64]0; $ae=$null; $te=$null; $me=$null; $lw=[DateTime]::MinValue; $lwt=0; $gws=0; $tick=0; $pp=0; $glast="";
 if($env:TDS_PARENT){ $pp=[int]$env:TDS_PARENT };
-function Emit($t,$m,$a){ [Console]::Out.WriteLine(([pscustomobject]@{title=$t;model=$m;anchor=$a;ws=$gws}|ConvertTo-Json -Compress)); [Console]::Out.Flush() }
+function Emit($t,$m,$a,$force=$false){
+  $o=[pscustomobject]@{title=$t;model=$m;anchor=$a;ws=$gws}|ConvertTo-Json -Compress;
+  if($force -or $o -ne $global:glast){ [Console]::Out.WriteLine($o); [Console]::Out.Flush(); $global:glast=$o }
+}
 function Walk($r){
   $found=$false;  # 走树失败（Text 空转）不清旧元素引用：清了会让后续快路径
                   # 全空、TTL 到期把运行中会话归零（用户 2026-10-02 反馈）；
@@ -1034,13 +1038,13 @@ while($true){
     $age=([DateTime]::Now-$lw).TotalMilliseconds;
     # 兜底间隔自适应：上次走树 >3s（ZCode 流式渲染时实测可达 12s+）就拉长到
     # 15s，忙时不连续空走；元素引用仍每 150ms 读实时值，切换检测不受影响
-    $bs = 2000; if($lwt -gt 3000){$bs = 15000};
+    $bs = 3000; if($lwt -gt 3000){$bs = 15000};
     if($null -eq $root -or $age -gt $bs){
       if($null -eq $root){$root=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd0)};
       $ht=""; $hm="";
       try{ if($te){$ht=$te.Current.Name}; if($me){$hm=$me.Current.Name} }catch{}
-      Emit $ht $hm $null;  # 走树前心跳带最后已知值：慢走（可达 12s+）期间 binder
-                           # 不至于拿到空标题而把运行中会话清成 0
+      Emit $ht $hm $null $true;  # 走树前心跳带最后已知值（强制发保喂狗）：慢走
+                                 # （可达 12s+）期间 binder 不拿空标题清掉运行中会话
       $t0=[DateTime]::Now;
       $w=Walk $root;
       $lwt=([DateTime]::Now-$t0).TotalMilliseconds;
@@ -1154,6 +1158,7 @@ def overlay_bind_loop():
     """overlay 绑定专用线程：watcher 供 UIA（250ms 级），这里只做轻量 DB
     查询，0.3s 一拍。db 连接线程私有（sqlite 连接跨线程并发使用不安全）。"""
     bdb = connect()
+    last_key = None
     while True:
         try:
             wv = uia_watch[0]
@@ -1180,26 +1185,39 @@ def overlay_bind_loop():
                 # 否则锚点被清空 → overlay 每轮闪没
                 zctx = {"title": uia_last[0]["title"],
                         "model": uia_last[0]["model"], "anchor": None}
-            sid = find_session_by_title(bdb, zctx["title"])
-            if not sid and not ever_anchored[0]:
-                # 仅冷启动兜底（从未锚定过任何 UIA 数据）：绑定最近活跃会话。
-                # 锚定过之后不能再用——最近活跃几乎总是刚离开的旧会话，会把
-                # 它的速度跟到新会话上（用户 2026-10-02 反馈的 bug 路径）
-                sid = fallback_session(bdb)
-            zdata = session_speed_data(
-                bdb, sid, provider_names(), model_hint=zctx["model"])
-            # overlay 口径（用户 2026-10-02 改定）：会话 90s 无活动即归零，
-            # 对齐面板 90s 规则，简略/详情不变。最近完成请求 <90s 时必然活跃，
-            # 跳过判活查询；更旧时用 part 活动判活——长回合生成中 part 持续
-            # 写入不会误归零（见 session_last_act），真正停下来才归零
-            if zdata and zdata["models"]:
-                last_done = zdata["models"][0]["last"] or 0
-                if last_done < time.time() * 1000 - 90 * 1000 and \
-                        session_last_act(bdb, sid) < time.time() * 1000 - 90 * 1000:
-                    zdata = None
-            zpayload = zdata or {"session": "", "title": zctx["title"],
-                                 "model": zctx["model"], "models": []}
-            overlay_payload[0] = zpayload  # 同步线程每 0.1s 取走重绘层叠窗口
+            # 最小性能（用户 2026-10-02 改定）：标题/模型/DB 都没变就不重算。
+            # session_speed_data + provider_names 一次 ~8ms（后者每次读 2 个
+            # 配置文件），0.3s 一拍纯属白烧；MAX(rowid) 是 O(1) 脏标记
+            # （实测 0.2ms），流式写入时照常重算，空闲时开销归零。
+            # last_key 在重算成功后才更新：中途异常下一拍自动重试
+            mu = bdb.execute(
+                "SELECT MAX(rowid) FROM model_usage").fetchone()[0] or 0
+            pr = bdb.execute(
+                "SELECT MAX(rowid) FROM part").fetchone()[0] or 0
+            key = (zctx["title"], zctx["model"], mu, pr)
+            if key != last_key:
+                sid = find_session_by_title(bdb, zctx["title"])
+                if not sid and not ever_anchored[0]:
+                    # 仅冷启动兜底（从未锚定过任何 UIA 数据）：绑定最近活跃
+                    # 会话。锚定过之后不能再用——最近活跃几乎总是刚离开的
+                    # 旧会话，会把它的速度跟到新会话上（用户反馈的 bug 路径）
+                    sid = fallback_session(bdb)
+                zdata = session_speed_data(
+                    bdb, sid, provider_names(), model_hint=zctx["model"])
+                # overlay 口径（用户 2026-10-02 改定）：会话 90s 无活动即归零，
+                # 对齐面板 90s 规则，简略/详情不变。最近完成请求 <90s 时必然
+                # 活跃，跳过判活查询；更旧时用 part 活动判活——长回合生成中
+                # part 持续写入不会误归零（见 session_last_act），真正停下才归零
+                if zdata and zdata["models"]:
+                    last_done = zdata["models"][0]["last"] or 0
+                    if last_done < time.time() * 1000 - 90 * 1000 and \
+                            session_last_act(
+                                bdb, sid) < time.time() * 1000 - 90 * 1000:
+                        zdata = None
+                    last_key = key
+                zpayload = zdata or {"session": "", "title": zctx["title"],
+                                     "model": zctx["model"], "models": []}
+                overlay_payload[0] = zpayload  # 同步线程每 0.1s 取走重绘层叠窗口
         except Exception as e:
             errlog("bind", e)
         time.sleep(0.3)
