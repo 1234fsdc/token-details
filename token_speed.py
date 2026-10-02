@@ -1002,7 +1002,8 @@ def zcode_session_title():
 # 元素的实时属性（~10ms，窗口拖动/会话切换即时可见），每 2s 兜底全量重走
 # （WebView2 重渲染会换掉元素引用）。控件过滤与 zcode_context 保持一致，两处同步改。
 UIA_WATCH_SCRIPT = r'''$ErrorActionPreference="Stop"; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes;
-$root=$null; $hwnd0=[int64]0; $ae=$null; $te=$null; $me=$null; $lw=[DateTime]::MinValue; $lwt=0; $gws=0; $tick=0;
+$root=$null; $hwnd0=[int64]0; $ae=$null; $te=$null; $me=$null; $lw=[DateTime]::MinValue; $lwt=0; $gws=0; $tick=0; $pp=0;
+if($env:TDS_PARENT){ $pp=[int]$env:TDS_PARENT };
 function Emit($t,$m,$a){ [Console]::Out.WriteLine(([pscustomobject]@{title=$t;model=$m;anchor=$a;ws=$gws}|ConvertTo-Json -Compress)); [Console]::Out.Flush() }
 function Walk($r){
   $global:ae=$null; $global:te=$null; $global:me=$null;
@@ -1051,6 +1052,10 @@ while($true){
     }
   }catch{ $root=$null; $ae=$null; $te=$null; $me=$null; Emit "" "" $null }
   $tick++;
+  if($tick % 20 -eq 0){  # ~3s 查一次父进程：pythonw 已死就自退——否则升级/重启
+                         # 留下孤儿 watcher（实测 v1 孤儿烧 12.5h：1.3GB + 7.5% CPU）
+    if($pp -gt 0 -and -not (Get-Process -Id $pp -ErrorAction SilentlyContinue)){ exit }
+  }
   if($tick % 200 -eq 0){  # ~30s 一次强制 GC：长循环里 UIA COM 包装（RCW）靠
                           # 惰性终结释放，实测 35min 涨到 1.2GB；配合 ws 字段熔断
     [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect();
@@ -1103,7 +1108,8 @@ def _watcher_loop():
                 ["powershell.exe", "-NoProfile", "-NonInteractive",
                  "-Command", UIA_WATCH_SCRIPT],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW)
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                env={**os.environ, "TDS_PARENT": str(os.getpid())})
             _uia_proc[0] = proc
             spawn_ts = time.time()
             last_line = [0.0]  # 本次 spawn 私有：跨重启的旧 ts 会把新进程秒杀
@@ -1926,36 +1932,41 @@ def run_web(db):
                         pass
                 if tool:
                     cur_tool[0] = tool
-                dz = detail_data(db, provider_names(), "zcode")
-                dc = detail_data(codex_db(), {"codex": "Codex"}, "codex")
-                D = dc if cur_tool[0] == "codex" else dz
-                panel_rows = dz["models"] + dc["models"]
-                sig = str([(m["model"], m["prov"], m["tps"]) for m in panel_rows])
-                if sig != last_sig[0]:
-                    last_sig[0] = sig
-                    trace(sig)
-                if w:
-                    w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
-                # overlay 的 UIA 探测/会话绑定已移出：watcher 进程 + overlay_bind_loop
-                # 专职供给（切换会话 ~0.5s 换数），这里不再每秒起 PowerShell 探测
-                # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）。
-                # 快照迭代、不整表回写：on_detail 在别的线程并发 append，
-                # detail_win[:] 会把刚加入的窗口抹掉；关闭摘除走 closing 事件
-                # （on_detail 挂钩）。刷新异常只记日志：瞬时失败≠窗口已关，不能踢。
-                pages = json.dumps({"ov": page_ov(D), "spd": page_spd(D),
-                                    "tok": page_tok(D)},
-                                   ensure_ascii=False)
-                for dw in list(detail_win):
-                    try:
-                        if dw.hidden:
-                            continue
-                        dw.evaluate_js(
-                            "var p=" + pages + ";"
-                            "document.getElementById('pg-ov').innerHTML=p.ov;"
-                            "document.getElementById('pg-spd').innerHTML=p.spd;"
-                            "document.getElementById('pg-tok').innerHTML=p.tok;")
-                    except Exception as e:
-                        errlog("detail-refresh", e)
+                # 面板/详情都不可见时跳过重取数（用户 2026-10-02 改定）：
+                # detail_data 实测 ~0.7s/次（500 行 part JSON 解析），此前 1Hz
+                # 常驻是 pythonw CPU 大头（实测 ~46% 单核）；overlay-only 模式
+                # （默认）下这些计算全是白烧。打开面板/详情后下一拍自动恢复
+                vis_panel = bool(w and not w.hidden)
+                vis_detail = any(not dw.hidden for dw in detail_win)
+                if vis_panel or vis_detail:
+                    dz = detail_data(db, provider_names(), "zcode")
+                    dc = detail_data(codex_db(), {"codex": "Codex"}, "codex")
+                    D = dc if cur_tool[0] == "codex" else dz
+                    panel_rows = dz["models"] + dc["models"]
+                    sig = str([(m["model"], m["prov"], m["tps"]) for m in panel_rows])
+                    if sig != last_sig[0]:
+                        last_sig[0] = sig
+                        trace(sig)
+                    if w:
+                        w.evaluate_js(f"update({json.dumps({'rows': panel_rows}, ensure_ascii=False)})")
+                    # 详情窗实时刷新：三页 HTML 打包逐容器替换（头部/下拉不重写，选择保留）。
+                    # 快照迭代、不整表回写：on_detail 在别的线程并发 append，
+                    # detail_win[:] 会把刚加入的窗口抹掉；关闭摘除走 closing 事件
+                    # （on_detail 挂钩）。刷新异常只记日志：瞬时失败≠窗口已关，不能踢。
+                    pages = json.dumps({"ov": page_ov(D), "spd": page_spd(D),
+                                        "tok": page_tok(D)},
+                                       ensure_ascii=False)
+                    for dw in list(detail_win):
+                        try:
+                            if dw.hidden:
+                                continue
+                            dw.evaluate_js(
+                                "var p=" + pages + ";"
+                                "document.getElementById('pg-ov').innerHTML=p.ov;"
+                                "document.getElementById('pg-spd').innerHTML=p.spd;"
+                                "document.getElementById('pg-tok').innerHTML=p.tok;")
+                        except Exception as e:
+                            errlog("detail-refresh", e)
                 if standalone and w and not w.hidden:
                     # 高度随内容自适应：亮色卡有边框/内边距，按 body 整体实测
                     h_css = w.evaluate_js("document.body.offsetHeight")
