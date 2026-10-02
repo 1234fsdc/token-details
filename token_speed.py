@@ -1155,6 +1155,12 @@ def native_watcher_cmd():
         if cp.returncode != 0:
             errlog("native-watch", "csc failed: "
                    + (cp.stderr or b"").decode("mbcs", errors="replace")[:300])
+            # 编译失败常见于源码更新后 exe 被运行中实例锁定（Windows 不允许
+            # 覆盖运行中的程序）：旧 exe 仍可用就用它，比退回 PS 更好；
+            # 下次重启（旧实例已退）会重编译成功
+            if os.path.exists(exe):
+                _native_state["exe"] = exe
+                return exe
             return None
         _native_state["exe"] = exe
         return exe
