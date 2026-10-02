@@ -409,12 +409,14 @@ def self_check():
     assert fallback_session(sdb) == "s3"
     sdb.execute("UPDATE session SET time_archived=1 WHERE id='s3'")
     assert fallback_session(sdb) == ""
-    # overlay 空闲归零判活：取会话最新 assistant 活动时间
-    assert session_last_act(sdb, "s1") == 2
+    # overlay 空闲归零判活：part 行随流式持续写入；message 行长回合不刷新
+    # （实测回合内可停 90s+），不能作为唯一判活信号
+    assert session_last_act(sdb, "s1") == 0  # 无 part 表/无 part 行 → 0
+    sdb.execute("CREATE TABLE part (session_id TEXT, time_updated INTEGER)")
     assert session_last_act(sdb, "no-such-session") == 0
-    sdb.execute("UPDATE message SET time_updated=? WHERE session_id='s1'",
-                (int(time.time() * 1000),))
-    assert session_last_act(sdb, "s1") >= int(time.time() * 1000) - 1000
+    sdb.execute("INSERT INTO part VALUES ('s1', ?)",
+                (int(time.time() * 1000) - 30 * 1000,))
+    assert session_last_act(sdb, "s1") >= int(time.time() * 1000) - 60 * 1000
     sdb.close()
     # overlay 定位：优先贴在“选择打开方式”按钮左侧（间距 OVERLAY_GAP=40），
     # 避免退回到错误的右下角位置。
@@ -1006,19 +1008,22 @@ $root=$null; $hwnd0=[int64]0; $ae=$null; $te=$null; $me=$null; $lw=[DateTime]::M
 if($env:TDS_PARENT){ $pp=[int]$env:TDS_PARENT };
 function Emit($t,$m,$a){ [Console]::Out.WriteLine(([pscustomobject]@{title=$t;model=$m;anchor=$a;ws=$gws}|ConvertTo-Json -Compress)); [Console]::Out.Flush() }
 function Walk($r){
-  $global:ae=$null; $global:te=$null; $global:me=$null;
+  $found=$false;  # 走树失败（Text 空转）不清旧元素引用：清了会让后续快路径
+                  # 全空、TTL 到期把运行中会话归零（用户 2026-10-02 反馈）；
+                  # 只在整棵树一无所获时才清（元素已死的场景，防紧循环）
   $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
   $buttons=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null;
   foreach($e in $buttons){$rc=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
-  if(!$model -and $rc.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){$model=$e.Current.Name; $global:me=$e};
-  if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$rc.Left,[int]$rc.Top,[int]$rc.Width,[int]$rc.Height); $global:ae=$e}}
+  if(!$model -and $rc.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){$model=$e.Current.Name; $global:me=$e; $found=$true};
+  if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$rc.Left,[int]$rc.Top,[int]$rc.Width,[int]$rc.Height); $global:ae=$e; $found=$true}}
   $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
   $texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
   if($texts.Count -eq 0){$texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)};
     foreach($e in $texts){$ct=$e.Current.ControlType.ProgrammaticName; if($ct -notmatch "Text"){continue}; $rc=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue}; $ln=$e.Current.Name.Length; if($ln -lt 2 -or $ln -ge 200 -or $ln -le $title.Length){continue}; $ok=$false;
     if($anchor){ if($rc.Width -ge 30 -and [Math]::Abs($rc.Top-$anchor[1]) -le 25 -and ($rc.Left+$rc.Width) -le ($anchor[0]+10) -and $rc.Left -ge 60){$ok=$true} };
     if(!$ok -and $rc.Top -ge 0 -and $rc.Top -le 120 -and $rc.Left -ge 60 -and $rc.Left -lt 2500 -and $rc.Width -ge 120 -and $rc.Width -le 900 -and $ln -ge 8){$ok=$true};
-    if($ok){$title=$e.Current.Name; $global:te=$e}}
+    if($ok){$title=$e.Current.Name; $global:te=$e; $found=$true}}
+  if(!$found){ $global:ae=$null; $global:te=$null; $global:me=$null }
   [pscustomobject]@{t=$title;m=$model;a=$anchor}
 }
 while($true){
@@ -1045,7 +1050,8 @@ while($true){
         $ar=$ae.Current.BoundingRectangle;
         $mn=""; if($null -ne $me){$mn=$me.Current.Name};
         Emit $te.Current.Name $mn @([int]$ar.Left,[int]$ar.Top,[int]$ar.Width,[int]$ar.Height)
-      }catch{ $root=$null; Emit "" "" $null }  # 元素被重渲染换掉 → 下轮全量重走
+      }catch{ $root=$null; $ae=$null; $te=$null; $me=$null; Emit "" "" $null }
+      # 元素被重渲染换掉（读即抛）→ 清引用防死元素紧循环，下轮全量重走
     } else {
       Emit "" "" $null  # 上次全量没找齐关键元素（如草稿无标题）：等兜底重走，
                         # 不立即再走整树（会连续空烧 CPU）
@@ -1182,13 +1188,15 @@ def overlay_bind_loop():
                 sid = fallback_session(bdb)
             zdata = session_speed_data(
                 bdb, sid, provider_names(), model_hint=zctx["model"])
-            # overlay 口径（用户 2026-10-02 改定）：会话 90s 内无 assistant
-            # 活动即视为空闲，速度归零——对齐面板 90s 规则，简略/详情不变。
-            # 按 message.time_updated 判活（同面板 _last_act 道理）：长回合
-            # 生成中没有新完成行，但 message 持续刷新，不会误归零
-            if zdata and zdata["models"] and session_last_act(
-                    bdb, sid) < time.time() * 1000 - 90 * 1000:
-                zdata = None
+            # overlay 口径（用户 2026-10-02 改定）：会话 90s 无活动即归零，
+            # 对齐面板 90s 规则，简略/详情不变。最近完成请求 <90s 时必然活跃，
+            # 跳过判活查询；更旧时用 part 活动判活——长回合生成中 part 持续
+            # 写入不会误归零（见 session_last_act），真正停下来才归零
+            if zdata and zdata["models"]:
+                last_done = zdata["models"][0]["last"] or 0
+                if last_done < time.time() * 1000 - 90 * 1000 and \
+                        session_last_act(bdb, sid) < time.time() * 1000 - 90 * 1000:
+                    zdata = None
             zpayload = zdata or {"session": "", "title": zctx["title"],
                                  "model": zctx["model"], "models": []}
             overlay_payload[0] = zpayload  # 同步线程每 0.1s 取走重绘层叠窗口
@@ -1229,12 +1237,16 @@ def fallback_session(db, window_ms=10 * 60 * 1000):
 
 
 def session_last_act(db, session_id):
-    """会话最新 assistant 活动时间（ms，生成中也算，流式期间持续刷新）。
-    只看 assistant 行：用户停留打字不算活动。表缺失/无活动返回 0。"""
+    """会话最新活动时间（ms）：取该会话最新 200 条 part 行的 MAX(time_updated)。
+    判活必须看 part：长回合生成中 message 行只在工具调用边界刷新（实测回合内
+    可停 90s+），part 行随流式/工具持续写入——只看 message 会把正在运行的会话
+    误判空闲归零（用户 2026-10-02 反馈"正在运行却显示 0"）。200 行窗口让活跃
+    会话近乎零成本（0.1ms），表缺失/无 part 行返回 0。"""
     try:
         row = db.execute(
-            "SELECT MAX(time_updated) FROM message "
-            "WHERE session_id=? AND json_extract(data,'$.role')='assistant'",
+            "SELECT MAX(time_updated) FROM "
+            "(SELECT time_updated FROM part WHERE session_id=? "
+            "ORDER BY rowid DESC LIMIT 200)",
             (session_id,)).fetchone()
         return (row[0] or 0) if row else 0
     except sqlite3.Error:
