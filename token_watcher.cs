@@ -60,6 +60,7 @@ class TokenWatcher
     {
         bool found = false;
         string model = ""; int[] anchor = null;
+        double modelTop = double.MinValue;
         var bc = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
         var buttons = r.FindAll(TreeScope.Descendants, bc);
         foreach (AutomationElement e in buttons)
@@ -69,8 +70,12 @@ class TokenWatcher
                 var rc = e.Current.BoundingRectangle;
                 if (e.Current.IsOffscreen) continue;
                 string n = e.Current.Name ?? "";
-                if (model == "" && rc.Width > 100 && ModelRe.IsMatch(n))
-                { model = n; modelEl = e; found = true; }
+                // 模型按钮取最靠底部的匹配：真按钮在底栏输入区，模型弹层的
+                // 选项条目同名同格式且在它上方——首匹配会选中弹层条目，弹层
+                // 关闭后元素脱离界面却持续吐旧值（读旧模型名 → 会话无该模型
+                // 记录 → 运行中显示 0，用户 2026-10-03 反馈，bind-zero 实锤）
+                if (rc.Width > 100 && ModelRe.IsMatch(n) && rc.Top > modelTop)
+                { modelTop = rc.Top; model = n; modelEl = e; found = true; }
                 if (anchor == null && n == "选择打开方式")
                 {
                     anchor = new[] { (int)rc.Left, (int)rc.Top, (int)rc.Width, (int)rc.Height };

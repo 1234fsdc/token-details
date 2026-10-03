@@ -953,9 +953,9 @@ $p=Get-Process ZCode -ErrorAction Stop | Where-Object {$_.MainWindowHandle -ne 0
 if(!$p){throw "ZCode main window not found"};
 $root=[System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle);
 $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
-$buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null;
+$buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null; $modelTop=-999999;
 foreach($e in $buttons){$r=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
-if(!$model -and $r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){$model=$e.Current.Name};
+if($r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$" -and $r.Top -gt $modelTop){$modelTop=$r.Top; $model=$e.Current.Name};
 if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$r.Left,[int]$r.Top,[int]$r.Width,[int]$r.Height)}}
 $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
 $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
@@ -1016,9 +1016,9 @@ function Walk($r){
                   # 全空、TTL 到期把运行中会话归零（用户 2026-10-02 反馈）；
                   # 只在整棵树一无所获时才清（元素已死的场景，防紧循环）
   $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
-  $buttons=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null;
+  $buttons=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null; $modelTop=-999999;
   foreach($e in $buttons){$rc=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
-  if(!$model -and $rc.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$"){$model=$e.Current.Name; $global:me=$e; $found=$true};
+  if($rc.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$" -and $rc.Top -gt $modelTop){$modelTop=$rc.Top; $model=$e.Current.Name; $global:me=$e; $found=$true};
   if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$rc.Left,[int]$rc.Top,[int]$rc.Width,[int]$rc.Height); $global:ae=$e; $found=$true}}
   $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
   $texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
@@ -1224,6 +1224,7 @@ def overlay_bind_loop():
     bdb = connect()
     last_key = None
     last_zero_log = 0.0  # 归零原因诊断日志限频
+    last_hint_log = 0.0  # 模型读数回退诊断日志限频
     while True:
         try:
             wv = uia_watch[0]
@@ -1274,6 +1275,18 @@ def overlay_bind_loop():
                     sid = fallback_session(bdb)
                 zdata = session_speed_data(
                     bdb, sid, provider_names(), model_hint=zctx["model"])
+                # 模型读数校验（用户 2026-10-03 改定"确保读到正确的模型"）：
+                # 读到的模型在该会话无任何完成记录 → 读数不可信（模型弹层条目
+                # 误缓存后吐旧值/子代理模型/刚切到从没用过的模型），回退按会话
+                # 最近实际模型（hint 置空走 message 最新 assistant 行自检），
+                # 运行中不再被假读数劫持成 0；整个会话无记录仍显示 0
+                if zdata is not None and not zdata["models"] and zctx["model"]:
+                    zdata = session_speed_data(bdb, sid, provider_names())
+                    if zdata and zdata["models"] and \
+                            time.time() - last_hint_log > 60:
+                        last_hint_log = time.time()
+                        errlog("bind-zero", f"model hint {zctx['model']!r} "
+                               "在会话无完成记录，回退最近模型")
                 # overlay 口径（用户 2026-10-02 改定）：会话 90s 无活动即归零，
                 # 对齐面板 90s 规则，简略/详情不变。最近完成请求 <90s 时必然
                 # 活跃，跳过判活查询；更旧时用 part 活动判活——长回合生成中
