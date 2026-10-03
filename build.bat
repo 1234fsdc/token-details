@@ -15,6 +15,9 @@ if errorlevel 1 (
     echo BUILD FAILED
     exit /b 1
 )
+rem 原生 watcher 源码随包分发（frozen 下在 exe 同目录找 .cs 现编译 token_watcher.exe）
+copy /y token_watcher.cs "%~dp0dist\" >nul
+
 rem 构建指纹：排障时先看这个文件判断面板跑的是哪版
 for /f %%i in ('git rev-parse --short HEAD') do set "git_hash=%%i"
 echo %date% %time%  commit:%git_hash%>"%~dp0dist\build_info.txt"
