@@ -582,6 +582,12 @@ class TDN
     [DllImport("user32.dll")] static extern IntPtr CreatePopupMenu();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool AppendMenuW(IntPtr menu, uint fl, IntPtr id, string txt);
     [DllImport("user32.dll")] static extern bool GetCursorPos(ref POINT p);
+    [DllImport("user32.dll")] static extern int GetWindowLongW(IntPtr h, int idx);
+    [DllImport("user32.dll")] static extern int SetWindowLongW(IntPtr h, int idx, int val);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int k);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint fl);
+    [DllImport("user32.dll")] static extern bool DestroyMenu(IntPtr m);
+    [DllImport("user32.dll")] static extern bool SystemParametersInfoW(uint act, uint prm, ref RECT rc, uint ini);
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr v);
     [DllImport("shcore.dll")] static extern int SetProcessDpiAwareness(int v);
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -613,17 +619,20 @@ class TDN
             if ((uint)(l.ToInt64() & 0xffff) == 0x0205) ShowTrayMenu();   // WM_RBUTTONUP
             return IntPtr.Zero;
         }
-        if (m == WM_COMMAND && (w.ToInt64() & 0xffff) == 1) { Quit(); return IntPtr.Zero; }
+        long cmd = w.ToInt64() & 0xffff;
+        if (m == WM_COMMAND && cmd == 1) { Quit(); return IntPtr.Zero; }
+        if (m == WM_COMMAND && cmd == 2) { TogglePanel(); return IntPtr.Zero; }
         return DefWindowProcW(h, m, w, l);
     }
 
     static void ShowTrayMenu()
     {
-        if (MenuHandle == IntPtr.Zero)
-        {
-            MenuHandle = CreatePopupMenu();
-            AppendMenuW(MenuHandle, 0, (IntPtr)1, "退出");
-        }
+        if (MenuHandle != IntPtr.Zero) DestroyMenu(MenuHandle);
+        MenuHandle = CreatePopupMenu();
+        AppendMenuW(MenuHandle, PanelVisible ? 8u : 0u, (IntPtr)2, "简略面板");   // MF_CHECKED
+        AppendMenuW(MenuHandle, 3u, (IntPtr)3, "详情");   // MF_GRAYED|MF_DISABLED，P3 解锁
+        AppendMenuW(MenuHandle, 0x800u, IntPtr.Zero, "");
+        AppendMenuW(MenuHandle, 0, (IntPtr)1, "退出");
         POINT p = default(POINT); GetCursorPos(ref p);
         SetForegroundWindow(OverlayHwnd);
         TrackPopupMenu(MenuHandle, 0x22 /*RIGHTBUTTON|BOTTOMALIGN*/, p.x, p.y, 0, OverlayHwnd, 0);
@@ -670,46 +679,52 @@ class TDN
                     g.DrawString(unit, FontUnit, bu, xR + gap, cy - wu.Height / 2f,
                                  StringFormat.GenericTypographic);
             }
-            // 预乘 alpha（ULW 要求预乘 BGRA）
-            Rectangle rect = new Rectangle(0, 0, w, h);
-            BitmapData bd = bmp.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
-            unsafe
+            Blt(hwnd, bmp, w, h, x, y, 255);
+        }
+    }
+
+    // 位图 -> 分层窗口（预乘 alpha + ULW）。globalAlpha = 整窗常数 alpha（对照
+    // SetLayeredWindowAttributes 125/190/220 三态），overlay 恒 255。
+    static void Blt(IntPtr hwnd, Bitmap bmp, int w, int h, int x, int y, byte globalAlpha)
+    {
+        Rectangle rect = new Rectangle(0, 0, w, h);
+        BitmapData bd = bmp.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+        unsafe
+        {
+            byte* p = (byte*)bd.Scan0;
+            for (int i = 0; i < w * h; i++)
             {
-                byte* p = (byte*)bd.Scan0;
-                for (int i = 0; i < w * h; i++)
+                byte a = p[i * 4 + 3];
+                if (a != 255)
                 {
-                    byte a = p[i * 4 + 3];
-                    if (a != 255)
-                    {
-                        p[i * 4] = (byte)(p[i * 4] * a / 255);
-                        p[i * 4 + 1] = (byte)(p[i * 4 + 1] * a / 255);
-                        p[i * 4 + 2] = (byte)(p[i * 4 + 2] * a / 255);
-                    }
+                    p[i * 4] = (byte)(p[i * 4] * a / 255);
+                    p[i * 4 + 1] = (byte)(p[i * 4 + 1] * a / 255);
+                    p[i * 4 + 2] = (byte)(p[i * 4 + 2] * a / 255);
                 }
             }
-            bmp.UnlockBits(bd);
+        }
+        bmp.UnlockBits(bd);
 
-            IntPtr dcS = GetDC(IntPtr.Zero);
-            if (dcS != IntPtr.Zero)
+        IntPtr dcS = GetDC(IntPtr.Zero);
+        if (dcS != IntPtr.Zero)
+        {
+            try
             {
+                IntPtr hBmp = bmp.GetHbitmap(Color.FromArgb(0));
                 try
                 {
-                    IntPtr hBmp = bmp.GetHbitmap(Color.FromArgb(0));
-                    try
-                    {
-                        IntPtr dcM = CreateCompatibleDC(dcS);
-                        IntPtr old = SelectObject(dcM, hBmp);
-                        POINT dst = new POINT(x, y), src = new POINT(0, 0);
-                        SIZE2 sz = new SIZE2(w, h);
-                        BLENDF bl = new BLENDF(255);
-                        UpdateLayeredWindow(hwnd, dcS, ref dst, ref sz, dcM, ref src, 0, ref bl, ULW_ALPHA);
-                        SelectObject(dcM, old);
-                        DeleteDC(dcM);
-                    }
-                    finally { DeleteObject(hBmp); }
+                    IntPtr dcM = CreateCompatibleDC(dcS);
+                    IntPtr oldB = SelectObject(dcM, hBmp);
+                    POINT dst = new POINT(x, y), src = new POINT(0, 0);
+                    SIZE2 sz = new SIZE2(w, h);
+                    BLENDF bl = new BLENDF(globalAlpha);
+                    UpdateLayeredWindow(hwnd, dcS, ref dst, ref sz, dcM, ref src, 0, ref bl, ULW_ALPHA);
+                    SelectObject(dcM, oldB);
+                    DeleteDC(dcM);
                 }
-                finally { ReleaseDC(IntPtr.Zero, dcS); }
+                finally { DeleteObject(hBmp); }
             }
+            finally { ReleaseDC(IntPtr.Zero, dcS); }
         }
     }
 
@@ -834,6 +849,8 @@ class TDN
         catch (Exception e) { ErrLog("init", "overlay: " + e.GetType().Name + " " + e.Message); }
         try { DbOpen(); }
         catch (Exception e) { ErrLog("init", "db: " + e.GetType().Name + " " + e.Message); }
+        try { LoadProvNames(); CreatePanelWindow(); }
+        catch (Exception e) { ErrLog("init", "panel: " + e.GetType().Name + " " + e.Message); }
         int tick = 0;
         while (true)
         {
@@ -844,6 +861,8 @@ class TDN
                 UiaTick(); double t1 = ProfSw.Elapsed.TotalMilliseconds;
                 BindTick(); double t2 = ProfSw.Elapsed.TotalMilliseconds;
                 OverlaySync();
+                PanelDataTick(false);
+                PanelHoverTick();
                 PUia += t1 - t0; PBind += t2 - t1; PTicks++; Prof("tick", 0);
             }
             catch (Exception e) { ErrLog("loop", e.GetType().Name + ": " + e.Message); }
@@ -851,6 +870,392 @@ class TDN
             Thread.Sleep(100);
             tick++;
         }
+    }
+
+    // ================= 简略面板（原生 GDI 版，对照 HTML 简略面板） =================
+    class PanelRow { public string Model, Prov, Tps; public int TpsV; public bool Run; }
+    class RunInfo { public string Model, Prov; public long Started; }
+
+    static IntPtr PanelHwnd;
+    static bool PanelVisible;
+    static byte PanelAlpha = 125;                 // 125 空闲 / 190 悬停 / 220 把手（对照三态）
+    static PanelRow[] PanelRows = new PanelRow[0];
+    static string PanelSig = "";
+    static int PanelX = -1, PanelY = -1;
+    static int LastPanelCalc;
+    static Font PanelFName, PanelFProv, PanelFVal, PanelFEmpty, PanelFGrip;
+    static uint PanelFontDpi;
+
+    static Dictionary<string, string> ProvNames = new Dictionary<string, string>();
+    static void LoadProvNames()
+    {
+        // provider_id -> 可读名（对照 provider_names()：v2 providerRules + 旧 cli providers）
+        try
+        {
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string[] paths = new string[] { home + "\\.zcode\\cli\\config.json",
+                                            home + "\\.zcode\\v2\\provider_config.json" };
+            System.Web.Script.Serialization.JavaScriptSerializer js =
+                new System.Web.Script.Serialization.JavaScriptSerializer();
+            foreach (string path in paths)
+            {
+                if (!System.IO.File.Exists(path)) continue;
+                Dictionary<string, object> cfg = js.Deserialize<Dictionary<string, object>>(
+                    System.IO.File.ReadAllText(path, System.Text.Encoding.UTF8));
+                if (cfg == null) continue;
+                // 新结构：{config:{providerConfigRules:{providerRules:[{providerId,providerName}]}}}
+                object node;
+                System.Collections.ArrayList rl = null;
+                if (cfg.TryGetValue("config", out node))
+                {
+                    Dictionary<string, object> c1 = node as Dictionary<string, object>;
+                    object node2 = null;
+                    if (c1 != null) c1.TryGetValue("providerConfigRules", out node2);
+                    Dictionary<string, object> c2 = node2 as Dictionary<string, object>;
+                    object rules = null;
+                    if (c2 != null) c2.TryGetValue("providerRules", out rules);
+                    rl = rules as System.Collections.ArrayList;
+                }
+                if (rl != null)
+                {
+                    foreach (object o in rl)
+                    {
+                        Dictionary<string, object> r = o as Dictionary<string, object>;
+                        if (r == null) continue;
+                        object nm, pid;
+                        if (r.TryGetValue("providerName", out nm) && nm != null
+                            && r.TryGetValue("providerId", out pid) && pid != null)
+                            ProvNames[pid.ToString()] = nm.ToString();
+                    }
+                    continue;
+                }
+                // 旧结构：{providers:{id:{name}}}（可能直接是列表）
+                object pv;
+                if (!cfg.TryGetValue("providers", out pv) || pv == null)
+                    cfg.TryGetValue("provider", out pv);
+                System.Collections.ArrayList lst = pv as System.Collections.ArrayList;
+                if (lst != null)
+                {
+                    Dictionary<string, object> map = new Dictionary<string, object>();
+                    foreach (object o in lst)
+                    {
+                        Dictionary<string, object> d = o as Dictionary<string, object>;
+                        object id;
+                        if (d != null && d.TryGetValue("id", out id) && id != null) map[id.ToString()] = d;
+                    }
+                    pv = map;
+                }
+                Dictionary<string, object> provs = pv as Dictionary<string, object>;
+                if (provs == null) continue;
+                foreach (KeyValuePair<string, object> kv in provs)
+                {
+                    Dictionary<string, object> d = kv.Value as Dictionary<string, object>;
+                    object nm;
+                    if (d != null && d.TryGetValue("name", out nm) && nm != null)
+                        ProvNames[kv.Key] = nm.ToString();
+                }
+            }
+        }
+        catch (Exception e) { ErrLog("prov", e.Message); }
+    }
+    static string ProvOf(string pid)
+    {
+        if (pid == null || pid.Length == 0) return "?";
+        string v;
+        return ProvNames.TryGetValue(pid, out v) ? v
+            : (pid.Length > 8 ? pid.Substring(0, 8) : pid);
+    }
+
+    // model_id -> 最新 assistant 活动（生成中也算活动；对照 _last_act）
+    static Dictionary<string, long> LastAct()
+    {
+        Dictionary<string, long> d = new Dictionary<string, long>();
+        object[][] rs = Query("SELECT COALESCE(json_extract(data,'$.modelId'), "
+            + "json_extract(data,'$.modelID')) mid, MAX(time_updated) FROM message "
+            + "WHERE json_extract(data,'$.role')='assistant' GROUP BY mid");
+        for (int i = 0; i < rs.Length; i++)
+        {
+            string m = S(rs[i][0]);
+            if (m != null && m.Length > 0) d[m] = L(rs[i][1]);
+        }
+        return d;
+    }
+
+    // 正在运行的模型（对照 running_models：finish 空/'started' 且无 usage 行；30 分钟僵尸窗口）
+    static System.Collections.ArrayList RunningModels()
+    {
+        System.Collections.ArrayList outp = new System.Collections.ArrayList();
+        long cutoff = UnixMs() - 30 * 60 * 1000L;
+        object[][] rs = Query(
+            "SELECT COALESCE(json_extract(m.data,'$.modelId'), json_extract(m.data,'$.modelID')) mid, "
+            + "COALESCE(json_extract(m.data,'$.providerId'), json_extract(m.data,'$.providerID')) pid, "
+            + "MIN(m.time_created) FROM message m "
+            + "WHERE json_extract(m.data,'$.role')='assistant' AND m.time_created >= ? "
+            + "AND (json_extract(m.data,'$.finish') IS NULL OR json_extract(m.data,'$.finish')='started') "
+            + "AND NOT EXISTS (SELECT 1 FROM model_usage u WHERE u.id LIKE '%' || m.id || '%') "
+            + "GROUP BY mid, pid", cutoff);
+        for (int i = 0; i < rs.Length; i++)
+        {
+            string m = S(rs[i][0]);
+            if (m == null || m.Length == 0) continue;
+            RunInfo r = new RunInfo();
+            r.Model = m; r.Prov = S(rs[i][1]) == null ? "" : S(rs[i][1]); r.Started = L(rs[i][2]);
+            outp.Add(r);
+        }
+        return outp;
+    }
+
+    // 简略面板行（对照 detail_data 的 models：聚合 + 90s 门控 + 运行中合并）
+    static PanelRow[] DetailModels()
+    {
+        if (DbH == IntPtr.Zero) return new PanelRow[0];
+        long cutoff = UnixMs() - 90 * 1000L;
+        string q = "SELECT id, provider_id, model_id, status, started_at, first_token_at, "
+            + "completed_at, duration_ms, output_tokens, reasoning_tokens FROM model_usage "
+            + "WHERE query_source!='compact' "
+            + "ORDER BY COALESCE(completed_at, started_at) DESC LIMIT 50";
+        object[][] rows = Query(q);
+        Dictionary<string, long> act = LastAct();
+        List<string> order = new List<string>();
+        Dictionary<string, List<object[]>> by = new Dictionary<string, List<object[]>>();
+        Dictionary<string, long> lastSeen = new Dictionary<string, long>();
+        for (int i = 0; i < rows.Length; i++)
+        {
+            object[] r = rows[i];
+            string mdl = S(r[2]) == null ? "?" : S(r[2]);
+            if (!by.ContainsKey(mdl)) { by[mdl] = new List<object[]>(); order.Add(mdl); }
+            by[mdl].Add(r);
+            if (!lastSeen.ContainsKey(mdl))
+                lastSeen[mdl] = L(r[6]) != 0 ? L(r[6]) : L(r[4]);
+        }
+        List<PanelRow> items = new List<PanelRow>();
+        Dictionary<string, double> tpsMap = new Dictionary<string, double>();
+        foreach (string mdl in order)
+        {
+            long latest = lastSeen[mdl];
+            long actT;
+            if (act.TryGetValue(mdl, out actT) && actT > latest) latest = actT;
+            if (latest < cutoff) continue;   // 90s 无活动不显示
+            List<object[]> lst = by[mdl];
+            long tot = 0, el = 0; int n = 0;
+            for (int i = 0; i < lst.Count && n < 8; i++)
+            {
+                object[] r = lst[i];
+                if (S(r[3]) != "completed") continue;
+                long tok = RowTok(r), e2 = ElapsedMs(r);
+                if (tok <= 0 || e2 <= 0) continue;
+                tot += tok; el += e2; n++;
+            }
+            if (el <= 0) continue;   // 无有效历史且非运行中不显示（运行中由合并段补占位行）
+            PanelRow pr = new PanelRow();
+            pr.Model = mdl; pr.Prov = ProvOf(S(lst[0][1])); pr.Run = false;
+            double tps0 = tot * 1000.0 / el;
+            tpsMap[mdl] = tps0;
+            pr.Tps = tps0.ToString("0.0"); pr.TpsV = (int)Math.Round(tps0);
+            items.Add(pr);
+        }
+        System.Collections.ArrayList run = RunningModels();
+        if (run.Count > 0)
+        {
+            Dictionary<string, RunInfo> runm = new Dictionary<string, RunInfo>();
+            foreach (RunInfo ri in run) if (!runm.ContainsKey(ri.Model)) runm[ri.Model] = ri;
+            List<PanelRow> kept = new List<PanelRow>();
+            foreach (PanelRow pr in items)
+                if (!runm.ContainsKey(pr.Model)) kept.Add(pr);
+            foreach (KeyValuePair<string, RunInfo> kv in runm)
+            {
+                PanelRow pr = new PanelRow();
+                pr.Model = kv.Key; pr.Prov = ProvOf(kv.Value.Prov); pr.Run = true;
+                double t;
+                if (tpsMap.TryGetValue(kv.Key, out t))
+                { pr.Tps = t.ToString("0.0"); pr.TpsV = (int)Math.Round(t); }
+                else { pr.Tps = "\u2026"; pr.TpsV = 0; }   // 运行中无历史 -> 占位
+                kept.Add(pr);
+            }
+            items = kept;
+        }
+        return items.ToArray();
+    }
+
+    static void PanelDataTick(bool force)
+    {
+        if (!PanelVisible) return;
+        int tc = Environment.TickCount;
+        if (LastPanelCalc != 0 && !force && tc - LastPanelCalc < 1000) return;   // 1Hz（面板不可见跳过取数）
+        LastPanelCalc = tc;
+        try
+        {
+            PanelRow[] rows = DetailModels();
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < rows.Length; i++)
+                sb.Append(rows[i].Model).Append('|').Append(rows[i].Prov).Append('|')
+                  .Append(rows[i].TpsV).Append('|').Append(rows[i].Run ? '1' : '0').Append(';');
+            string sig = sb.ToString();
+            if (sig != PanelSig) { PanelSig = sig; PanelRows = rows; RedrawPanel(); }
+        }
+        catch (Exception e) { ErrLog("panel", e.Message); }
+    }
+
+    static void TogglePanel()
+    {
+        PanelVisible = !PanelVisible;
+        if (PanelVisible)
+        {
+            if (PanelX < 0)
+            {   // 首次显示：工作区右下角（用户随后可拖到任意位置）
+                RECT wa = new RECT();
+                if (!SystemParametersInfoW(0x0048, 0, ref wa, 0)) { wa.r = 1200; wa.b = 700; }
+                PanelX = wa.r - 270; PanelY = wa.b - 160;
+            }
+            ShowWindow(PanelHwnd, SW_SHOWNOACTIVATE);
+            LastPanelCalc = 0;
+            PanelDataTick(true);
+        }
+        else ShowWindow(PanelHwnd, SW_HIDE);
+    }
+
+    static void EnsurePanelFonts(uint dpi)
+    {
+        if (PanelFontDpi == dpi && PanelFName != null) return;
+        PanelFontDpi = dpi;
+        double s = dpi / 96.0;
+        if (PanelFName != null) PanelFName.Dispose();
+        if (PanelFProv != null) PanelFProv.Dispose();
+        if (PanelFVal != null) PanelFVal.Dispose();
+        if (PanelFEmpty != null) PanelFEmpty.Dispose();
+        if (PanelFGrip != null) PanelFGrip.Dispose();
+        PanelFName = new Font("Segoe UI", (int)Math.Round(12 * s), FontStyle.Bold, GraphicsUnit.Pixel);
+        PanelFProv = new Font("Segoe UI", (int)Math.Round(9 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        try { PanelFVal = new Font("Bahnschrift", (int)Math.Round(19 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
+        catch { PanelFVal = new Font("Segoe UI", (int)Math.Round(19 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
+        PanelFEmpty = new Font("Segoe UI", (int)Math.Round(11 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        try { PanelFGrip = new Font("Segoe UI Symbol", (int)Math.Round(11 * s), FontStyle.Regular, GraphicsUnit.Pixel); }
+        catch { PanelFGrip = new Font("Segoe UI", (int)Math.Round(11 * s), FontStyle.Regular, GraphicsUnit.Pixel); }
+    }
+
+    static readonly Color InkPanel = Color.FromArgb(255, 0x11, 0x15, 0x1A);
+    static readonly Color MutedPanel = Color.FromArgb(255, 0x4B, 0x55, 0x60);
+    static readonly Color HairPanel = Color.FromArgb(70, 70, 78, 88);
+    static readonly Color FastC = Color.FromArgb(255, 0x08, 0x7A, 0x3D);
+    static readonly Color MidC = Color.FromArgb(255, 0xB4, 0x5F, 0x00);
+    static readonly Color SlowC = Color.FromArgb(255, 0xBD, 0x1F, 0x1F);
+    static Color SpeedC(int v) { return v >= 80 ? FastC : (v >= 50 ? MidC : SlowC); }
+
+    static void RedrawPanel()
+    {
+        if (PanelHwnd == IntPtr.Zero) return;
+        uint dpi = GetDpiForWindow(PanelHwnd); if (dpi == 0) dpi = 96;
+        EnsurePanelFonts(dpi);
+        double s = dpi / 96.0;
+        int w = (int)Math.Round(250 * s);
+        int n = PanelRows.Length;
+        int h = n == 0 ? (int)Math.Round(48 * s)
+                       : (int)Math.Round((14 + n * 52 + 8) * s);
+        using (Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+        {
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                StringFormat typ = StringFormat.GenericTypographic;
+                if (n == 0)
+                {
+                    SizeF ew = g.MeasureString("暂无数据", PanelFEmpty, PointF.Empty, typ);
+                    using (SolidBrush b = new SolidBrush(MutedPanel))
+                        g.DrawString("暂无数据", PanelFEmpty, b, (w - ew.Width) / 2f, (h - ew.Height) / 2f, typ);
+                }
+                int cx = (int)Math.Round(30 * s), rx = w - (int)Math.Round(16 * s);
+                for (int i = 0; i < n; i++)
+                {
+                    PanelRow r = PanelRows[i];
+                    float y0 = (float)Math.Round((14 + i * 52) * s);
+                    // 名称 + 供应商（供应商接在名称后，muted 大写）
+                    float nameW = g.MeasureString(r.Model == null ? "" : r.Model, PanelFName, PointF.Empty, typ).Width;
+                    using (SolidBrush b = new SolidBrush(InkPanel))
+                        g.DrawString(r.Model == null ? "" : r.Model, PanelFName, b, cx, y0 + 8 * (float)s, typ);
+                    using (SolidBrush b = new SolidBrush(MutedPanel))
+                        g.DrawString((r.Prov == null ? "" : r.Prov).ToUpperInvariant(), PanelFProv, b,
+                                     cx + nameW + 6 * (float)s, y0 + 12 * (float)s, typ);
+                    // 速度值：运行中无历史显示占位；有历史按 fast/mid/slow 着色
+                    if (r.Run && r.TpsV == 0)
+                    {
+                        SizeF vw = g.MeasureString("\u2026", PanelFName, PointF.Empty, typ);
+                        using (SolidBrush b = new SolidBrush(MutedPanel))
+                            g.DrawString("\u2026", PanelFName, b, rx - vw.Width, y0 + 6 * (float)s, typ);
+                    }
+                    else
+                    {
+                        string v = r.Tps + " t/s";
+                        SizeF vw = g.MeasureString(v, PanelFVal, PointF.Empty, typ);
+                        using (SolidBrush b = new SolidBrush(SpeedC(r.TpsV)))
+                            g.DrawString(v, PanelFVal, b, rx - vw.Width, y0 + 4 * (float)s, typ);
+                    }
+                    // 速度条：满格 = 120 t/s（对照 bar 宽度公式）
+                    int barW = rx - cx;
+                    int fill = Math.Min(100, (int)Math.Round(r.TpsV / 120.0 * 100)) * barW / 100;
+                    using (SolidBrush b = new SolidBrush(HairPanel))
+                        g.FillRectangle(b, cx, y0 + 36 * (float)s, barW, 2f);
+                    if (fill > 0)
+                        using (SolidBrush b = new SolidBrush(SpeedC(r.TpsV)))
+                            g.FillRectangle(b, cx, y0 + 36 * (float)s, fill, 2f);
+                    // 行分隔线（最后一行不画，对照 .row:last-child）
+                    if (i < n - 1)
+                        using (SolidBrush b = new SolidBrush(HairPanel))
+                            g.FillRectangle(b, cx, y0 + 51 * (float)s, barW, 1f);
+                }
+                // 把手（拖拽热区）：三点盲文字符
+                using (SolidBrush b = new SolidBrush(InkPanel))
+                    g.DrawString("\u283F", PanelFGrip, b, 8 * (float)s, 6 * (float)s, typ);
+            }
+            Blt(PanelHwnd, bmp, w, h, PanelX, PanelY, PanelAlpha);
+        }
+    }
+
+    static void PanelHoverTick()
+    {
+        // 简略面板三态（对照 hover_loop）：把手区=解除穿透+可拖；其余永久穿透。
+        if (!PanelVisible || PanelHwnd == IntPtr.Zero) return;
+        try
+        {
+            POINT pt = default(POINT); GetCursorPos(ref pt);
+            RECT rc = new RECT(); GetWindowRect(PanelHwnd, ref rc);
+            bool inside = pt.x >= rc.l && pt.x <= rc.r && pt.y >= rc.t && pt.y <= rc.b;
+            uint dpi = GetDpiForWindow(PanelHwnd); if (dpi == 0) dpi = 96;
+            double s = dpi / 96.0;
+            int gx = rc.l + (int)Math.Round(4 * s), gy = rc.t + (int)Math.Round(2 * s);
+            bool inGrip = inside && pt.x >= gx && pt.x <= gx + (int)Math.Round(26 * s)
+                              && pt.y >= gy && pt.y <= gy + (int)Math.Round(26 * s);
+            int ex = GetWindowLongW(PanelHwnd, -20);
+            int want = inGrip ? (ex & ~WS_EX_TRANSPARENT) : (ex | WS_EX_TRANSPARENT);
+            if (want != ex) SetWindowLongW(PanelHwnd, -20, want);
+            byte wantA = inGrip ? (byte)220 : (inside ? (byte)190 : (byte)125);
+            if (wantA != PanelAlpha) { PanelAlpha = wantA; RedrawPanel(); }
+            if (inGrip && (GetAsyncKeyState(0x01) & 0x8000) != 0)
+            {   // 把手拖拽（阻塞子循环，松开即返回；对照 20ms 轮询）
+                int x0 = pt.x, y0 = pt.y, wx = rc.l, wy = rc.t;
+                while ((GetAsyncKeyState(0x01) & 0x8000) != 0)
+                {
+                    POINT q = default(POINT); GetCursorPos(ref q);
+                    SetWindowPos(PanelHwnd, IntPtr.Zero, wx + q.x - x0, wy + q.y - y0,
+                                 0, 0, 0x0001 | 0x0010);   // NOSIZE|NOACTIVATE
+                    Thread.Sleep(20);
+                }
+                RECT nr = new RECT(); GetWindowRect(PanelHwnd, ref nr);
+                PanelX = nr.l; PanelY = nr.t;
+            }
+        }
+        catch (Exception e) { ErrLog("hover", e.Message); }
+    }
+
+    static void CreatePanelWindow()
+    {
+        WNDCLASSW wc = new WNDCLASSW();
+        wc.proc = Marshal.GetFunctionPointerForDelegate(ProcKeeper);
+        wc.inst = Marshal.GetHINSTANCE(typeof(TDN).Module);
+        wc.name = "TokenDetailsPanel";
+        RegisterClassW(ref wc);
+        uint ex = (uint)(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST);
+        PanelHwnd = CreateWindowExW(ex, "TokenDetailsPanel", "Token Details", WS_POPUP,
+            0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, wc.inst, IntPtr.Zero);
     }
 
     static void Main()
