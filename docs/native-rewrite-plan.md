@@ -39,8 +39,12 @@
 - [x] overlay 只在 ZCode 前台显示；锚定"选择打开方式"按钮左侧
 - [x] 托盘：简略面板开关/详情/退出；面板不可见时跳过取数
 - [x] 速度口径：completed+非 compact，8 条窗口加权 (out+reason)/elapsed，provider 前缀剥离
+- [x] 简略面板（P2：托盘开关/1Hz/90s 门控/running 合并/把手拖拽/三态 alpha）
+- [x] 详情三页（P3：标签页/滚动/全套口径移植）
+- [x] 换装 dist + 桌面/Startup 快捷方式指向 native（P5，2026-10-05）
 - [ ] codex 双源（二期）
-- [ ] UIA 事件驱动（P4）
+- [ ] part 字符估算 _est_map（二期：无回报模型的估算行）
+- [ ] UIA 事件驱动（P4，性能优化，待用户验收 P1-P3 后做）
 
 ## 阶段
 P1 核心骨架（SQLite+统计+overlay+托盘+互斥+UIA 内联）→ 对照旧版实拍
@@ -50,6 +54,13 @@ P4 UIA 事件驱动
 P5 换装 dist（旧 exe 留 .bak）+ 系统级实测（进程数/内存/CPU）
 
 ## 进度日志
+- 2026-10-05 04:0x P2/P3/P5 完成（提交 70a7005、718c3e2）：
+  - P2 简略面板：托盘菜单三项（简略面板勾选开关/详情/退出）、GDI 渲染对照 HTML 样式、BLENDF 整窗 alpha 三态、把手拖拽穿透、1Hz 取数 sig 重绘。功能链路验证通过（WM_COMMAND 切换、250x74 单行运行中模型、高度公式吻合）。
+  - P3 详情三页：440x660 分层窗口、自绘标签页+滚轮+SetClip 滚动、数据全套移植（today_summary/session_stats/dmodels/bm/tsess/cp/days）。打开/切换/滚动/1Hz 刷新验证通过。
+  - 两个关键坑：①csc 无 BOM 按 GBK 读源码——P1/P2 中文字面量在 exe 里是乱码，.cs 改 UTF-8 BOM；②详情窗口漏 WS_EX_LAYERED → ULW 静默失败。
+  - P5 换装：桌面 + Startup 快捷方式已指向 dist\TokenDetailsNative.exe（回读验证），旧 dist\TokenDetails.exe 保留作回退（含 codex 双源，native 二期才移植）。
+  - ⚠️ 未验证：像素级视觉（面板/详情/菜单中文显示）——凌晨锁屏 BitBlt 被拒，待用户回来看；长跑内存趋势；真实重启自启。
+  - 性能结论（P1 实测延续）：单进程 ~39MB 私有 / CPU 4.2-4.5% 单核（流式期间），对照旧版 142MB / 6.5%。
 - 2026-10-05 03:0x 方案落盘，P1 开工
 - 2026-10-05 03:5x P1 完成并实测验收：
   - 口径验证：同一时刻同一会话 Python `session_speed_data` 与 native 均报 **35.4 t/s**，完全一致。此前"33.0 vs 44.5 不一致"是对比对象错误——native 绑定的是当时可见会话（sess_e0d49d03），Python 查的是另一会话（sess_706ece69）。
