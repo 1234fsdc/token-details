@@ -1,4 +1,4 @@
-// Token Details 原生版（2026-10-05 用户改定：完全重写，性能最优）。
+﻿// Token Details 原生版（2026-10-05 用户改定：完全重写，性能最优）。
 // 单进程 C#（.NET Framework 4.x，系统自带 csc）：UIA 内联 + SQLite P/Invoke
 // （sqlite3.dll 取自本机 Python 运行时，随包分发）+ GDI+ 分层窗口 overlay + 托盘。
 // 语义逐条对照 token_speed.py（见 docs/native-rewrite-plan.md 语义保持清单）。
@@ -622,6 +622,23 @@ class TDN
         long cmd = w.ToInt64() & 0xffff;
         if (m == WM_COMMAND && cmd == 1) { Quit(); return IntPtr.Zero; }
         if (m == WM_COMMAND && cmd == 2) { TogglePanel(); return IntPtr.Zero; }
+        if (m == WM_COMMAND && cmd == 3) { ToggleDetail(); return IntPtr.Zero; }
+        if (h == DetailHwnd)
+        {
+            if (m == 0x0201)   // WM_LBUTTONDOWN：标签页切换
+            {
+                int px = (short)(l.ToInt64() & 0xffff), py = (short)((l.ToInt64() >> 16) & 0xffff);
+                DetailMouseDown(px, py);
+                return IntPtr.Zero;
+            }
+            if (m == 0x020A)   // WM_MOUSEWHEEL
+            {
+                DetailWheel((short)((w.ToInt64() >> 16) & 0xffff));
+                return IntPtr.Zero;
+            }
+            if (m == 0x0010)   // WM_CLOSE：隐藏不销毁
+            { ShowWindow(DetailHwnd, SW_HIDE); DetailVisible = false; return IntPtr.Zero; }
+        }
         return DefWindowProcW(h, m, w, l);
     }
 
@@ -630,7 +647,7 @@ class TDN
         if (MenuHandle != IntPtr.Zero) DestroyMenu(MenuHandle);
         MenuHandle = CreatePopupMenu();
         AppendMenuW(MenuHandle, PanelVisible ? 8u : 0u, (IntPtr)2, "简略面板");   // MF_CHECKED
-        AppendMenuW(MenuHandle, 3u, (IntPtr)3, "详情");   // MF_GRAYED|MF_DISABLED，P3 解锁
+        AppendMenuW(MenuHandle, DetailVisible ? 8u : 0u, (IntPtr)3, "详情");
         AppendMenuW(MenuHandle, 0x800u, IntPtr.Zero, "");
         AppendMenuW(MenuHandle, 0, (IntPtr)1, "退出");
         POINT p = default(POINT); GetCursorPos(ref p);
@@ -851,6 +868,8 @@ class TDN
         catch (Exception e) { ErrLog("init", "db: " + e.GetType().Name + " " + e.Message); }
         try { LoadProvNames(); CreatePanelWindow(); }
         catch (Exception e) { ErrLog("init", "panel: " + e.GetType().Name + " " + e.Message); }
+        try { CreateDetailWindow(); }
+        catch (Exception e) { ErrLog("init", "detail: " + e.GetType().Name + " " + e.Message); }
         int tick = 0;
         while (true)
         {
@@ -863,6 +882,9 @@ class TDN
                 OverlaySync();
                 PanelDataTick(false);
                 PanelHoverTick();
+                DetailDataTick();
+                if (DetailRedraw && DetailVisible)
+                { DetailRedraw = false; try { DrawDetail(); } catch (Exception e2) { ErrLog("detail", e2.Message); } }
                 PUia += t1 - t0; PBind += t2 - t1; PTicks++; Prof("tick", 0);
             }
             catch (Exception e) { ErrLog("loop", e.GetType().Name + ": " + e.Message); }
@@ -1256,6 +1278,619 @@ class TDN
         uint ex = (uint)(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST);
         PanelHwnd = CreateWindowExW(ex, "TokenDetailsPanel", "Token Details", WS_POPUP,
             0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, wc.inst, IntPtr.Zero);
+    }
+
+    // ================= 详情三页（原生 GDI 版，对照 detail_html/page_ov/spd/tok） =================
+    class SumData { public long N, Tok, TalkTok, TalkMs, Out, Inp, Reason, Cache;
+                    public double Ttft, Rpm; }
+    class SessData { public string Title, Model; public long Cnt, Usage, Last;
+                     public double Tps, Ttft, Rpm; }
+    class DmData { public string Model, Prov, Tps; public int TpsV;
+                   public long Cnt; public double Rpm; }
+    class BmData { public string Model, Prov; public long Tok, Cnt; public int Pct; }
+    class TsData { public string Title; public long Cnt, Tok; }
+    class CpData { public string Title; public long N, Last; }
+    class DayData { public string Label; public long Tok; }
+    class DetailData {
+        public SumData Sum = new SumData();
+        public SessData[] Sess = new SessData[0];
+        public DmData[] Dm = new DmData[0];
+        public BmData[] Bm = new BmData[0];
+        public TsData[] Ts = new TsData[0];
+        public CpData[] Cp = new CpData[0];
+        public DayData[] Days = new DayData[0];
+    }
+    class RectI { public int X, Y, W, H; }
+
+    static IntPtr DetailHwnd;
+    static bool DetailVisible;
+    static bool DetailRedraw;
+    static int DetailPage;            // 0 总览 1 速度 2 总量
+    static int DetailScroll;
+    static int DetailContentH;
+    static int DetailX = -1, DetailY = -1;
+    static int LastDetailCalc;
+    static DetailData DD = new DetailData();
+    static double DetailScale = 1.0;
+    static Font DFBase, DFSec, DFName, DFMeta, DFVal, DFCardV, DFCardK, DFTab, DFChart;
+    static uint DetailFontDpi;
+    static readonly RectI[] TabRects = new RectI[] { new RectI(), new RectI(), new RectI() };
+
+    static readonly Color InkD = Color.FromArgb(255, 0x1A, 0x1D, 0x22);
+    static readonly Color MutedD = Color.FromArgb(255, 0x9A, 0x97, 0x8C);
+    static readonly Color PaperD = Color.FromArgb(255, 0xFF, 0xFD, 0xF8);
+    static readonly Color LineD = Color.FromArgb(255, 0xE9, 0xE5, 0xDA);
+    static readonly Color HairD = Color.FromArgb(255, 0xF0, 0xEC, 0xE1);
+    static readonly Color VermD = Color.FromArgb(255, 0xFF, 0x4D, 0x2E);
+    static readonly Color BarBgD = Color.FromArgb(255, 0xD9, 0xD2, 0xC4);
+    static readonly Color FastD = Color.FromArgb(255, 0x0A, 0x8F, 0x46);
+    static readonly Color MidD = Color.FromArgb(255, 0xD9, 0x77, 0x06);
+    static readonly Color SlowD = Color.FromArgb(255, 0xDC, 0x26, 0x26);
+    static Color SpdC(double v) { return v >= 80 ? FastD : (v >= 50 ? MidD : SlowD); }
+
+    // 中文计量（对照 _k：亿/万）
+    static string Kcn(long n)
+    {
+        if (n >= 100000000) return (n / 100000000.0).ToString("0.00") + "亿";
+        if (n >= 10000) return (n / 10000.0).ToString("0.0").TrimEnd('0').TrimEnd('.') + "万";
+        return n.ToString("#,0");
+    }
+    static long Day0()
+    {
+        DateTime d = DateTime.Today;
+        return (long)(d - new DateTime(1970, 1, 1)).TotalMilliseconds
+            + (long)TimeZoneInfo.Local.GetUtcOffset(d).TotalMilliseconds;
+    }
+    static string FmtMs(long ms)
+    {
+        return new DateTime(1970, 1, 1).AddMilliseconds(ms).ToLocalTime().ToString("MM-dd HH:mm");
+    }
+
+    // ---- 取数（对照 today_summary / session_stats / dmodels / today_by_model / today_sessions / compact_stats / week_daily） ----
+    static DetailData RefreshDetail()
+    {
+        DetailData d = new DetailData();
+        long d0 = Day0();
+        double bill = 0.1;   // CACHE_BILL：缓存读按 1 折计费
+        // 今日汇总
+        object[][] sr = Query(
+            "SELECT COUNT(CASE WHEN query_source!='compact' THEN 1 END), "
+            + "COALESCE(SUM(output_tokens+reasoning_tokens+input_tokens"
+            + "+cache_creation_input_tokens+cache_read_input_tokens),0), "
+            + "COALESCE(SUM(CASE WHEN query_source!='compact' AND started_at IS NOT NULL "
+            + "AND completed_at IS NOT NULL AND completed_at>started_at "
+            + "THEN output_tokens+reasoning_tokens END),0), "
+            + "COALESCE(SUM(CASE WHEN query_source!='compact' AND started_at IS NOT NULL "
+            + "AND completed_at IS NOT NULL AND completed_at>started_at "
+            + "THEN completed_at-started_at END),0), "
+            + "COALESCE(SUM(output_tokens),0), COALESCE(SUM(input_tokens),0), "
+            + "COALESCE(SUM(reasoning_tokens),0), "
+            + "COALESCE(SUM(cache_creation_input_tokens+cache_read_input_tokens),0), "
+            + "AVG(CASE WHEN query_source!='compact' AND first_token_at IS NOT NULL "
+            + "AND started_at IS NOT NULL AND first_token_at>=started_at "
+            + "THEN first_token_at-started_at END), "
+            + "MIN(CASE WHEN query_source!='compact' THEN completed_at END), "
+            + "MAX(CASE WHEN query_source!='compact' THEN completed_at END) "
+            + "FROM model_usage WHERE status='completed' AND completed_at >= ?", d0);
+        if (sr.Length > 0)
+        {
+            object[] r = sr[0];
+            SumData sm = d.Sum;
+            sm.N = L(r[0]); sm.Tok = L(r[1]); sm.TalkTok = L(r[2]); sm.TalkMs = L(r[3]);
+            sm.Out = L(r[4]); sm.Inp = L(r[5]); sm.Reason = L(r[6]); sm.Cache = L(r[7]);
+            if (r[8] != null) sm.Ttft = Convert.ToDouble(r[8]) / 1000.0;
+            long mn = L(r[9]), mx = L(r[10]);
+            if (sm.N > 0 && mn > 0 && mx > mn) sm.Rpm = sm.N * 60000.0 / (mx - mn);
+        }
+        // 会话速度（30 分钟窗口）
+        long cutSess = UnixMs() - 30 * 60 * 1000L;
+        object[][] ss = Query(
+            "SELECT u.session_id, COALESCE(s.title, u.session_id), COUNT(*), "
+            + "SUM(CASE WHEN u.started_at IS NOT NULL AND u.completed_at IS NOT NULL "
+            + "AND u.completed_at>u.started_at THEN u.output_tokens+u.reasoning_tokens END), "
+            + "CAST(SUM(u.output_tokens+u.reasoning_tokens+u.input_tokens"
+            + "+u.cache_creation_input_tokens+u.cache_read_input_tokens*"
+            + bill.ToString("0.0##") + ") AS INT), "
+            + "SUM(CASE WHEN u.started_at IS NOT NULL AND u.completed_at IS NOT NULL "
+            + "AND u.completed_at>u.started_at THEN u.completed_at-u.started_at END), "
+            + "MAX(COALESCE(u.completed_at,u.started_at)), "
+            + "AVG(CASE WHEN u.first_token_at IS NOT NULL AND u.started_at IS NOT NULL "
+            + "AND u.first_token_at>=u.started_at THEN u.first_token_at-u.started_at END), "
+            + "MIN(COALESCE(u.completed_at,u.started_at)), "
+            + "(SELECT u2.model_id FROM model_usage u2 WHERE u2.session_id=u.session_id "
+            + "AND u2.query_source!='compact' AND u2.status='completed' "
+            + "ORDER BY COALESCE(u2.completed_at,u2.started_at) DESC LIMIT 1) "
+            + "FROM model_usage u LEFT JOIN session s ON s.id=u.session_id "
+            + "WHERE u.query_source!='compact' AND u.task_type!='subagent_child' "
+            + "GROUP BY u.session_id "
+            + "HAVING MAX(COALESCE(u.completed_at,u.started_at)) >= " + cutSess + " "
+            + "ORDER BY 6 DESC LIMIT 30");
+        List<SessData> sess = new List<SessData>();
+        for (int i = 0; i < ss.Length; i++)
+        {
+            object[] r = ss[i];
+            SessData x = new SessData();
+            x.Title = S(r[1]) == null ? S(r[0]) : S(r[1]);
+            x.Cnt = L(r[2]);
+            long tok = r[3] == null ? 0 : L(r[3]);
+            long gen = r[5] == null ? 0 : L(r[5]);
+            x.Tps = gen > 0 ? tok * 1000.0 / gen : 0.0;
+            x.Usage = r[4] == null ? 0 : L(r[4]);
+            x.Last = L(r[6]);
+            if (r[7] != null) x.Ttft = Convert.ToDouble(r[7]) / 1000.0;
+            long first = L(r[8]);
+            double span = (first > 0 && x.Last > first) ? (x.Last - first) / 60000.0 : 0.0;
+            x.Rpm = span > 0 ? x.Cnt / span : 0.0;
+            x.Model = S(r[9]) == null ? "-" : S(r[9]);
+            sess.Add(x);
+        }
+        d.Sess = sess.ToArray();
+        // 每模型速度 · 今日（500 行窗口，无 90s 门控；cnt/rpm 来自今日完成请求）
+        object[][] rows5 = Query(
+            "SELECT id, provider_id, model_id, status, started_at, first_token_at, "
+            + "completed_at, duration_ms, output_tokens, reasoning_tokens FROM model_usage "
+            + "WHERE query_source!='compact' "
+            + "ORDER BY COALESCE(completed_at, started_at) DESC LIMIT 500");
+        object[][] stat = Query(
+            "SELECT model_id, COUNT(*), MIN(COALESCE(completed_at,started_at)), "
+            + "MAX(COALESCE(completed_at,started_at)) FROM model_usage "
+            + "WHERE status='completed' AND query_source!='compact' "
+            + "AND COALESCE(completed_at,started_at)>=? AND model_id!='' "
+            + "GROUP BY model_id", d0);
+        Dictionary<string, object[]> statMap = new Dictionary<string, object[]>();
+        for (int i = 0; i < stat.Length; i++) statMap[S(stat[i][0])] = stat[i];
+        List<string> order = new List<string>();
+        Dictionary<string, List<object[]>> by = new Dictionary<string, List<object[]>>();
+        for (int i = 0; i < rows5.Length; i++)
+        {
+            string m = S(rows5[i][2]) == null ? "?" : S(rows5[i][2]);
+            if (!by.ContainsKey(m)) { by[m] = new List<object[]>(); order.Add(m); }
+            by[m].Add(rows5[i]);
+        }
+        List<DmData> dms = new List<DmData>();
+        foreach (string m in order)
+        {
+            object[] latest = by[m][0];
+            if ((L(latest[6]) != 0 ? L(latest[6]) : L(latest[4])) < d0) continue;   // 今日才有
+            long tot = 0, el = 0; int n = 0;
+            for (int i = 0; i < by[m].Count && n < 8; i++)
+            {
+                object[] r = by[m][i];
+                if (S(r[3]) != "completed") continue;
+                long tk = RowTok(r), e2 = ElapsedMs(r);
+                if (tk <= 0 || e2 <= 0) continue;
+                tot += tk; el += e2; n++;
+            }
+            if (el <= 0) continue;
+            DmData x = new DmData();
+            x.Model = m; x.Prov = ProvOf(S(latest[1]));
+            double tps = tot * 1000.0 / el;
+            x.Tps = tps.ToString("0.0"); x.TpsV = (int)Math.Round(tps);
+            object[] st;
+            if (statMap.TryGetValue(m, out st))
+            {
+                x.Cnt = L(st[1]);
+                long mn = L(st[2]), mx = L(st[3]);
+                x.Rpm = (x.Cnt > 1 && mx > mn) ? x.Cnt * 60000.0 / (mx - mn) : 0.0;
+            }
+            dms.Add(x);
+        }
+        d.Dm = dms.ToArray();
+        // 按模型 · 今日
+        object[][] bm = Query(
+            "SELECT model_id, provider_id, "
+            + "CAST(SUM(output_tokens+reasoning_tokens+input_tokens"
+            + "+cache_creation_input_tokens+cache_read_input_tokens*"
+            + bill.ToString("0.0##") + ") AS INT), COUNT(*) FROM model_usage "
+            + "WHERE status='completed' AND completed_at>=? AND model_id!='' "
+            + "GROUP BY model_id, provider_id ORDER BY 3 DESC", d0);
+        long total = 1;
+        for (int i = 0; i < bm.Length; i++) total += L(bm[i][2]);
+        List<BmData> bml = new List<BmData>();
+        for (int i = 0; i < bm.Length; i++)
+        {
+            object[] r = bm[i];
+            BmData x = new BmData();
+            x.Model = S(r[0]); x.Prov = ProvOf(S(r[1]));
+            x.Tok = L(r[2]); x.Cnt = L(r[3]);
+            x.Pct = (int)Math.Round(x.Tok * 100.0 / total);
+            bml.Add(x);
+        }
+        d.Bm = bml.ToArray();
+        // 按会话 · 今日（子代理归并）
+        object[][] ts = Query(
+            "SELECT CASE WHEN u.task_type='subagent_child' THEN '子代理' "
+            + "ELSE COALESCE(s.title, u.session_id) END, COUNT(*), "
+            + "CAST(SUM(u.output_tokens+u.reasoning_tokens+u.input_tokens"
+            + "+u.cache_creation_input_tokens+u.cache_read_input_tokens*"
+            + bill.ToString("0.0##") + ") AS INT) "
+            + "FROM model_usage u LEFT JOIN session s ON s.id=u.session_id "
+            + "WHERE u.status='completed' AND u.completed_at>=? "
+            + "GROUP BY 1 ORDER BY 3 DESC LIMIT 20", d0);
+        List<TsData> tsl = new List<TsData>();
+        for (int i = 0; i < ts.Length; i++)
+        {
+            TsData x = new TsData();
+            x.Title = S(ts[i][0]); x.Cnt = L(ts[i][1]); x.Tok = L(ts[i][2]);
+            tsl.Add(x);
+        }
+        d.Ts = tsl.ToArray();
+        // 会话压缩（30 天，未归档）
+        long cutCp = UnixMs() - 30L * 86400 * 1000;
+        object[][] cp = Query(
+            "SELECT COALESCE(s.title, u.session_id), COUNT(*), MAX(u.completed_at) "
+            + "FROM model_usage u LEFT JOIN session s ON s.id=u.session_id "
+            + "WHERE u.query_source='compact' AND u.status='completed' "
+            + "AND u.completed_at>=? AND s.time_archived IS NULL "
+            + "GROUP BY u.session_id ORDER BY 3 DESC", cutCp);
+        List<CpData> cpl = new List<CpData>();
+        for (int i = 0; i < cp.Length; i++)
+        {
+            CpData x = new CpData();
+            x.Title = S(cp[i][0]); x.N = L(cp[i][1]); x.Last = L(cp[i][2]);
+            cpl.Add(x);
+        }
+        d.Cp = cpl.ToArray();
+        // 近 7 日
+        long day0w = d0 - 6L * 86400 * 1000;
+        object[][] wd = Query(
+            "SELECT strftime('%Y-%m-%d', completed_at/1000, 'unixepoch', 'localtime'), "
+            + "CAST(SUM(output_tokens+reasoning_tokens+input_tokens"
+            + "+cache_creation_input_tokens+cache_read_input_tokens*"
+            + bill.ToString("0.0##") + ") AS INT) FROM model_usage "
+            + "WHERE status='completed' AND completed_at>=? GROUP BY 1", day0w);
+        Dictionary<string, long> sums = new Dictionary<string, long>();
+        for (int i = 0; i < wd.Length; i++) sums[S(wd[i][0])] = L(wd[i][1]);
+        List<DayData> dls = new List<DayData>();
+        for (int i = 0; i < 7; i++)
+        {
+            DateTime dd = new DateTime(1970, 1, 1).AddMilliseconds(day0w + i * 86400L * 1000);
+            DayData x = new DayData();
+            x.Label = dd.ToString("MM-dd");
+            long t;
+            sums.TryGetValue(x.Label, out t);
+            x.Tok = t;
+            dls.Add(x);
+        }
+        d.Days = dls.ToArray();
+        return d;
+    }
+
+    static void DetailDataTick()
+    {
+        if (!DetailVisible || DbH == IntPtr.Zero) return;
+        int tc = Environment.TickCount;
+        if (LastDetailCalc != 0 && tc - LastDetailCalc < 1000) return;
+        LastDetailCalc = tc;
+        try { DD = RefreshDetail(); DrawDetail(); }
+        catch (Exception e) { ErrLog("detail", e.Message); }
+    }
+
+    static void ToggleDetail()
+    {
+        DetailVisible = !DetailVisible;
+        if (DetailVisible)
+        {
+            if (DetailX < 0)
+            {
+                RECT wa = new RECT();
+                if (!SystemParametersInfoW(0x0048, 0, ref wa, 0)) { wa.r = 1200; wa.b = 700; }
+                DetailX = wa.r - 470; DetailY = wa.t + 40;
+            }
+            ShowWindow(DetailHwnd, SW_SHOWNOACTIVATE);
+            LastDetailCalc = 0;
+            DetailDataTick();
+        }
+        else ShowWindow(DetailHwnd, SW_HIDE);
+    }
+
+    static void EnsureDetailFonts(uint dpi)
+    {
+        if (DetailFontDpi == dpi && DFBase != null) return;
+        DetailFontDpi = dpi;
+        double s = dpi / 96.0;
+        if (DFBase != null) DFBase.Dispose();
+        if (DFSec != null) DFSec.Dispose();
+        if (DFName != null) DFName.Dispose();
+        if (DFMeta != null) DFMeta.Dispose();
+        if (DFVal != null) DFVal.Dispose();
+        if (DFCardV != null) DFCardV.Dispose();
+        if (DFCardK != null) DFCardK.Dispose();
+        if (DFTab != null) DFTab.Dispose();
+        if (DFChart != null) DFChart.Dispose();
+        DFBase = new Font("Segoe UI", (int)Math.Round(13 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        DFSec = new Font("Segoe UI", (int)Math.Round(10 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        DFName = new Font("Segoe UI", (int)Math.Round(13 * s), FontStyle.Bold, GraphicsUnit.Pixel);
+        DFMeta = new Font("Segoe UI", (int)Math.Round(10.5 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        try { DFVal = new Font("Bahnschrift", (int)Math.Round(17 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
+        catch { DFVal = new Font("Segoe UI", (int)Math.Round(17 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
+        try { DFCardV = new Font("Bahnschrift", (int)Math.Round(20 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
+        catch { DFCardV = new Font("Segoe UI", (int)Math.Round(20 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
+        DFCardK = new Font("Segoe UI", (int)Math.Round(9.5 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        DFTab = new Font("Segoe UI", (int)Math.Round(15 * s), FontStyle.Bold, GraphicsUnit.Pixel);
+        DFChart = new Font("Segoe UI", (int)Math.Round(9 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+    }
+
+    // 一行：名称 + 右侧 meta 串 + 值 + 条
+    static int DrawRow(Graphics g, int y, int w, int pad, string name, string meta,
+                       string val, Color vc, int barPct, Color barC)
+    {
+        double s = DetailScale;
+        int x0 = (int)Math.Round(pad * s), rx = w - (int)Math.Round(26 * s);
+        using (SolidBrush b = new SolidBrush(InkD))
+            g.DrawString(name, DFName, b, x0, y, StringFormat.GenericTypographic);
+        SizeF vw = g.MeasureString(val, DFVal, PointF.Empty, StringFormat.GenericTypographic);
+        float vx = rx - vw.Width;
+        using (SolidBrush b = new SolidBrush(vc))
+            g.DrawString(val, DFVal, b, vx, y - 2 * (float)s, StringFormat.GenericTypographic);
+        if (meta != null && meta.Length > 0)
+        {
+            SizeF mw = g.MeasureString(meta, DFMeta, PointF.Empty, StringFormat.GenericTypographic);
+            using (SolidBrush b = new SolidBrush(MutedD))
+                g.DrawString(meta, DFMeta, b, vx - 14 * (float)s - mw.Width, y + 5 * (float)s,
+                             StringFormat.GenericTypographic);
+        }
+        int barY = y + (int)Math.Round(24 * s);
+        using (SolidBrush b = new SolidBrush(HairD))
+            g.FillRectangle(b, x0, barY, rx - x0, 2);
+        int fill = Math.Max(0, Math.Min(100, barPct)) * (rx - x0) / 100;
+        if (fill > 0)
+            using (SolidBrush b = new SolidBrush(barC))
+                g.FillRectangle(b, x0, barY, fill, 2);
+        return y + (int)Math.Round(46 * s);
+    }
+
+    static int DrawSec(Graphics g, int y, string text)
+    {
+        using (SolidBrush b = new SolidBrush(MutedD))
+            g.DrawString(text, DFSec, b, 26 * (float)DetailScale, y, StringFormat.GenericTypographic);
+        return y + (int)Math.Round(24 * DetailScale);
+    }
+    static int DrawEmpty(Graphics g, int y, string text)
+    {
+        using (SolidBrush b = new SolidBrush(MutedD))
+            g.DrawString(text, DFBase, b, 26 * (float)DetailScale, y, StringFormat.GenericTypographic);
+        return y + (int)Math.Round(46 * DetailScale);
+    }
+
+    static int DrawCards(Graphics g, int y, int w, string[] keys, string[] vals, Color[] vc)
+    {
+        double s = DetailScale;
+        int colW = (w - (int)Math.Round(40 * s)) / 3;
+        int x = (int)Math.Round(28 * s);
+        for (int i = 0; i < keys.Length; i++)
+        {
+            if (i > 0)
+                using (SolidBrush b = new SolidBrush(LineD))
+                    g.FillRectangle(b, x - (int)Math.Round(9 * s), y, 1, (int)Math.Round(40 * s));
+            using (SolidBrush b = new SolidBrush(MutedD))
+                g.DrawString(keys[i].ToUpperInvariant(), DFCardK, b, x, y,
+                             StringFormat.GenericTypographic);
+            using (SolidBrush b = new SolidBrush(i < vc.Length ? vc[i] : InkD))
+                g.DrawString(vals[i], DFCardV, b, x, y + (int)Math.Round(14 * s),
+                             StringFormat.GenericTypographic);
+            x += colW + (int)Math.Round(18 * s);
+        }
+        return y + (int)Math.Round(58 * s);
+    }
+
+    static void DrawDetail()
+    {
+        if (DetailHwnd == IntPtr.Zero) return;
+        uint dpi = GetDpiForWindow(DetailHwnd); if (dpi == 0) dpi = 96;
+        EnsureDetailFonts(dpi);
+        DetailScale = dpi / 96.0;
+        double s = DetailScale;
+        int w = (int)Math.Round(440 * s), h = (int)Math.Round(660 * s);
+        using (Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+        {
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+                StringFormat typ = StringFormat.GenericTypographic;
+                using (SolidBrush pb = new SolidBrush(PaperD))
+                    g.FillRectangle(pb, 0, 0, w, h);
+                // 头部：日期 + 实时点 + 标签页
+                using (SolidBrush b = new SolidBrush(VermD))
+                    g.FillEllipse(b, w - (int)Math.Round(60 * s), (int)Math.Round(22 * s),
+                                  (int)Math.Round(7 * s), (int)Math.Round(7 * s));
+                using (SolidBrush b = new SolidBrush(MutedD))
+                    g.DrawString(DateTime.Now.ToString("MM-dd") + " · 实时刷新", DFMeta, b,
+                                 w - (int)Math.Round(48 * s), (int)Math.Round(18 * s), typ);
+                string[] tabs = new string[] { "总览", "速度", "总量" };
+                int tabX = (int)Math.Round(26 * s);
+                for (int i = 0; i < 3; i++)
+                {
+                    bool on = i == DetailPage;
+                    using (SolidBrush b = new SolidBrush(on ? InkD : MutedD))
+                        g.DrawString(tabs[i], DFTab, b, tabX, (int)Math.Round(12 * s), typ);
+                    SizeF tw = g.MeasureString(tabs[i], DFTab, PointF.Empty, typ);
+                    TabRects[i].X = tabX; TabRects[i].Y = (int)Math.Round(8 * s);
+                    TabRects[i].W = (int)Math.Round(tw.Width); TabRects[i].H = (int)Math.Round(28 * s);
+                    tabX += (int)Math.Round(tw.Width) + (int)Math.Round(18 * s);
+                }
+                using (SolidBrush b = new SolidBrush(LineD))
+                    g.FillRectangle(b, 0, (int)Math.Round(44 * s), w, 1);
+                // 内容区：滚动态裁剪，绘制 y 随 DetailScroll 上移
+                System.Drawing.Drawing2D.GraphicsState gs = g.Save();
+                g.SetClip(new Rectangle(0, (int)Math.Round(45 * s), w, h - (int)Math.Round(45 * s)));
+                int y = (int)Math.Round(56 * s) - DetailScroll;
+                SumData sm = DD.Sum;
+                if (DetailPage == 0)
+                {
+                    double avg = sm.TalkMs > 0 ? sm.TalkTok * 1000.0 / sm.TalkMs : 0.0;
+                    y = DrawCards(g, y, w,
+                        new string[] { "今日请求", "平均速度", "今日 TOKENS" },
+                        new string[] { sm.N + " 次", string.Format("{0:0.0} t/s", avg),
+                                       Kcn(sm.Tok - (long)(sm.Cache * 0.9)) },
+                        new Color[] { InkD, SpdC(avg), InkD });
+                    y = DrawSec(g, y, "每模型速度 · 今日");
+                    if (DD.Dm.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
+                    for (int i = 0; i < DD.Dm.Length; i++)
+                    {
+                        DmData m = DD.Dm[i];
+                        int pct = Math.Min(100, (int)Math.Round(m.TpsV / 120.0 * 100));
+                        y = DrawRow(g, y, w, 26, m.Model,
+                            m.Prov + "  " + m.Cnt + " 次  " + string.Format("{0:0.0}", m.Rpm) + " 次/分",
+                            m.Tps, SpdC(m.TpsV), pct, SpdC(m.TpsV));
+                    }
+                    y = DrawSec(g, y, "活跃会话 · 30 分钟窗口");
+                    if (DD.Sess.Length == 0) y = DrawEmpty(g, y, "30 分钟内无活动会话");
+                    for (int i = 0; i < DD.Sess.Length; i++)
+                    {
+                        SessData x = DD.Sess[i];
+                        int pct = Math.Min(100, (int)Math.Round(x.Tps / 120.0 * 100));
+                        y = DrawRow(g, y, w, 26, x.Title,
+                            "首字 " + (x.Ttft > 0 ? string.Format("{0:0.0}s", x.Ttft) : "-")
+                            + "  " + string.Format("{0:0.0}", x.Rpm) + " 次/分  " + x.Cnt + " 次  "
+                            + (x.Last > 0 ? FmtMs(x.Last) : "-"),
+                            string.Format("{0:0.0}", x.Tps), SpdC(x.Tps), pct, SpdC(x.Tps));
+                    }
+                }
+                else if (DetailPage == 1)
+                {
+                    double avg = sm.TalkMs > 0 ? sm.TalkTok * 1000.0 / sm.TalkMs : 0.0;
+                    y = DrawCards(g, y, w,
+                        new string[] { "平均Token速度", "平均请求速度", "平均首字速度" },
+                        new string[] { string.Format("{0:0.0} t/s", avg),
+                                       string.Format("{0:0.0} 次/分", sm.Rpm),
+                                       (sm.Ttft > 0 ? string.Format("{0:0.0} s", sm.Ttft) : "-") },
+                        new Color[] { SpdC(avg), InkD, InkD });
+                    y = DrawSec(g, y, "每模型速度 · 今日（最近 8 条加权）");
+                    if (DD.Dm.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
+                    for (int i = 0; i < DD.Dm.Length; i++)
+                    {
+                        DmData m = DD.Dm[i];
+                        int pct = Math.Min(100, (int)Math.Round(m.TpsV / 120.0 * 100));
+                        y = DrawRow(g, y, w, 26, m.Model,
+                            m.Prov + "  " + m.Cnt + " 次  " + string.Format("{0:0.0}", m.Rpm) + " 次/分",
+                            m.Tps, SpdC(m.TpsV), pct, SpdC(m.TpsV));
+                    }
+                    y = DrawSec(g, y, "会话速度 · 30 分钟窗口");
+                    if (DD.Sess.Length == 0) y = DrawEmpty(g, y, "30 分钟内无活动会话");
+                    for (int i = 0; i < DD.Sess.Length; i++)
+                    {
+                        SessData x = DD.Sess[i];
+                        int pct = Math.Min(100, (int)Math.Round(x.Tps / 120.0 * 100));
+                        y = DrawRow(g, y, w, 26, x.Title,
+                            x.Model + "  首字 " + (x.Ttft > 0 ? string.Format("{0:0.0}s", x.Ttft) : "-")
+                            + "  " + string.Format("{0:0.0}", x.Rpm) + " 次/分  " + Kcn(x.Usage) + " tok",
+                            string.Format("{0:0.0}", x.Tps), SpdC(x.Tps), pct, SpdC(x.Tps));
+                    }
+                }
+                else
+                {
+                    y = DrawCards(g, y, w,
+                        new string[] { "今日 TOKENS", "今日请求", "输入输出" },
+                        new string[] { Kcn(sm.Tok - (long)(sm.Cache * 0.9)), sm.N + " 次",
+                                       Kcn((long)(sm.Inp + sm.Cache * 0.1)) + " / " + Kcn(sm.Out + sm.Reason) },
+                        new Color[] { InkD, InkD, InkD });
+                    y = DrawSec(g, y, "按模型 · 今日");
+                    if (DD.Bm.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
+                    for (int i = 0; i < DD.Bm.Length; i++)
+                    {
+                        BmData m = DD.Bm[i];
+                        y = DrawRow(g, y, w, 26, m.Model,
+                            m.Prov + "  " + m.Tok.ToString("#,0") + " tok  " + m.Cnt + " 次  " + m.Pct + "%",
+                            m.Pct + "%", VermD, m.Pct, VermD);
+                    }
+                    y = DrawSec(g, y, "按会话 · 今日");
+                    long tsSum = 1;
+                    for (int i = 0; i < DD.Ts.Length; i++) tsSum += DD.Ts[i].Tok;
+                    if (DD.Ts.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
+                    for (int i = 0; i < DD.Ts.Length; i++)
+                    {
+                        TsData x = DD.Ts[i];
+                        int pct = (int)Math.Round(x.Tok * 100.0 / tsSum);
+                        y = DrawRow(g, y, w, 26, x.Title,
+                            x.Cnt + " 次  " + Kcn(x.Tok) + " tok", Kcn(x.Tok), VermD, pct, VermD);
+                    }
+                    long cn = 0;
+                    for (int i = 0; i < DD.Cp.Length; i++) cn += DD.Cp[i].N;
+                    y = DrawSec(g, y, "会话压缩 · 30 天内 " + cn + " 次");
+                    if (DD.Cp.Length == 0) y = DrawEmpty(g, y, "30 天内无压缩会话");
+                    for (int i = 0; i < DD.Cp.Length; i++)
+                    {
+                        CpData x = DD.Cp[i];
+                        y = DrawRow(g, y, w, 26, x.Title,
+                            x.N + " 次  " + (x.Last > 0 ? FmtMs(x.Last) : "-"),
+                            "", InkD, 0, HairD);
+                    }
+                    bool anyDay = false;
+                    for (int i = 0; i < DD.Days.Length; i++) if (DD.Days[i].Tok > 0) { anyDay = true; break; }
+                    if (anyDay)
+                    {
+                        long mx = 1;
+                        for (int i = 0; i < DD.Days.Length; i++) if (DD.Days[i].Tok > mx) mx = DD.Days[i].Tok;
+                        y = DrawSec(g, y, "近 7 日 token");
+                        int chW = w - (int)Math.Round(52 * s);
+                        int colW = chW / 7;
+                        int chartY = y + (int)Math.Round(16 * s);
+                        int chartH = (int)Math.Round(46 * s);
+                        for (int i = 0; i < 7; i++)
+                        {
+                            DayData d2 = DD.Days[i];
+                            int bh = Math.Max((int)Math.Round(2 * s), (int)Math.Round(d2.Tok * (double)chartH / mx));
+                            bool peak = d2.Tok == mx;
+                            using (SolidBrush b = new SolidBrush(peak ? VermD : BarBgD))
+                                g.FillRectangle(b, (int)Math.Round(26 * s) + i * colW,
+                                                chartY + chartH - bh, colW - (int)Math.Round(3 * s), bh);
+                            using (SolidBrush b = new SolidBrush(MutedD))
+                            {
+                                string num = Kcn(d2.Tok);
+                                SizeF nw = g.MeasureString(num, DFChart, PointF.Empty, typ);
+                                g.DrawString(num, DFChart, b,
+                                    (int)Math.Round(26 * s) + i * colW + (colW - nw.Width) / 2f,
+                                    chartY - (int)Math.Round(14 * s), typ);
+                                SizeF lw = g.MeasureString(d2.Label, DFChart, PointF.Empty, typ);
+                                g.DrawString(d2.Label, DFChart, b,
+                                    (int)Math.Round(26 * s) + i * colW + (colW - lw.Width) / 2f,
+                                    chartY + chartH + (int)Math.Round(4 * s), typ);
+                            }
+                        }
+                        y = chartY + chartH + (int)Math.Round(22 * s);
+                    }
+                }
+                g.Restore(gs);
+                DetailContentH = (y + DetailScroll) - (int)Math.Round(56 * s) + (int)Math.Round(10 * s);
+                int maxScroll = DetailContentH - (h - (int)Math.Round(56 * s));
+                if (maxScroll < 0) maxScroll = 0;
+                if (DetailScroll > maxScroll) { DetailScroll = maxScroll; DetailRedraw = true; }
+            }
+            Blt(DetailHwnd, bmp, w, h, DetailX, DetailY, 255);
+        }
+    }
+
+    static void CreateDetailWindow()
+    {
+        WNDCLASSW wc = new WNDCLASSW();
+        wc.proc = Marshal.GetFunctionPointerForDelegate(ProcKeeper);
+        wc.inst = Marshal.GetHINSTANCE(typeof(TDN).Module);
+        wc.name = "TokenDetailsDetail";
+        RegisterClassW(ref wc);
+        uint ex = (uint)(0x80000 | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST);   // 0x80000=WS_EX_LAYERED
+        DetailHwnd = CreateWindowExW(ex, "TokenDetailsDetail", "Token Details 详情", WS_POPUP,
+            0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, wc.inst, IntPtr.Zero);
+    }
+
+    static void DetailMouseDown(int px, int py)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            if (px >= TabRects[i].X && px <= TabRects[i].X + TabRects[i].W
+                && py >= TabRects[i].Y && py <= TabRects[i].Y + TabRects[i].H)
+            {
+                if (DetailPage != i) { DetailPage = i; DetailScroll = 0; DrawDetail(); }
+                return;
+            }
+        }
+    }
+
+    static void DetailWheel(int delta)
+    {
+        DetailScroll -= delta / 120 * 60;
+        if (DetailScroll < 0) DetailScroll = 0;
+        try { DrawDetail(); } catch (Exception e) { ErrLog("detail", e.Message); }
     }
 
     static void Main()
