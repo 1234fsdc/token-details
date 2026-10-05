@@ -444,9 +444,40 @@
   $("#closePreview").addEventListener("click", () => { state.closed = true; render(); });
   reopen.addEventListener("click", () => { state.closed = false; render(); });
   let drag = null;
-  $("#dragHandle").addEventListener("pointerdown", (e) => { if (e.target.closest("button")) return; drag = { id: e.pointerId, x: e.clientX, y: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); });
-  $("#dragHandle").addEventListener("pointermove", (e) => { if (!drag) return; if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 6) { $("#canvas").dataset.dragged = "true"; } });
-  $("#dragHandle").addEventListener("pointerup", (e) => { if (drag) { drag = null; e.currentTarget.releasePointerCapture(e.pointerId); } });
+  let dragOffset = { x: 0, y: 0 };
+  const applyDrag = () => { win.style.transform = `translate(${dragOffset.x}px, ${dragOffset.y}px)`; };
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  $("#dragHandle").addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    const canvasRect = $("#canvas").getBoundingClientRect();
+    const windowRect = win.getBoundingClientRect();
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, baseX: dragOffset.x, baseY: dragOffset.y, canvasRect, windowRect, active: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  });
+  $("#dragHandle").addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const moveX = e.clientX - drag.x;
+    const moveY = e.clientY - drag.y;
+    if (!drag.active && Math.hypot(moveX, moveY) > 6) drag.active = true;
+    if (!drag.active) return;
+    const minLeft = drag.canvasRect.left + 8;
+    const maxLeft = drag.canvasRect.right - 8 - drag.windowRect.width;
+    const minTop = drag.canvasRect.top + 8;
+    const maxTop = drag.canvasRect.bottom - 8 - drag.windowRect.height;
+    const nextLeft = clamp(drag.windowRect.left + moveX, minLeft, Math.max(minLeft, maxLeft));
+    const nextTop = clamp(drag.windowRect.top + moveY, minTop, Math.max(minTop, maxTop));
+    dragOffset.x = drag.baseX + nextLeft - drag.windowRect.left;
+    dragOffset.y = drag.baseY + nextTop - drag.windowRect.top;
+    applyDrag();
+    $("#canvas").dataset.dragged = "true";
+  });
+  $("#dragHandle").addEventListener("pointerup", (e) => {
+    if (drag) {
+      drag = null;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  });
+  $("#dragHandle").addEventListener("pointercancel", () => { drag = null; });
   render();
 })();
 </script>
