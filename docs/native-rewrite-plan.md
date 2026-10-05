@@ -65,7 +65,8 @@ P5 换装 dist（旧 exe 留 .bak）+ 系统级实测（进程数/内存/CPU）
   - P2 简略面板：托盘菜单三项（简略面板勾选开关/详情/退出）、GDI 渲染对照 HTML 样式、BLENDF 整窗 alpha 三态、把手拖拽穿透、1Hz 取数 sig 重绘。功能链路验证通过（WM_COMMAND 切换、250x74 单行运行中模型、高度公式吻合）。
   - P3 详情三页：440x660 分层窗口、自绘标签页+滚轮+SetClip 滚动、数据全套移植（today_summary/session_stats/dmodels/bm/tsess/cp/days）。打开/切换/滚动/1Hz 刷新验证通过。
   - 两个关键坑：①csc 无 BOM 按 GBK 读源码——P1/P2 中文字面量在 exe 里是乱码，.cs 改 UTF-8 BOM；②详情窗口漏 WS_EX_LAYERED → ULW 静默失败。
-  - P5 换装：桌面 + Startup 快捷方式已指向 dist\TokenDetailsNative.exe（回读验证），旧 dist\TokenDetails.exe 保留作回退（含 codex 双源，native 二期才移植）。
+  - P5 换装：桌面 + Startup 快捷方式指向 dist\TokenDetailsNative.exe，旧 dist\TokenDetails.exe 保留作回退（含 codex 双源，native 二期才移植）。
+  - **P5 快捷方式事故（2026-10-05 晚发现并修复）**：当时"回读验证"称已指向 native，实为假象——桌面 lnk 的 target 仍是旧 TokenDetails.exe，仅 IconLocation 被写成乱码路径；Startup lnk 的 target/icon/wd **三个字段全是乱码**（`鏈╘Desktop\椤圭洰2608`），开机自启实际完全失效。根因：写快捷方式走 PowerShell 脚本，中文路径经 Git Bash heredoc→PS 传递时编码错乱写进了坏字节，而"回读验证"在同一编码层里没发现。修复：改用 python COM（IShellLinkW，进程内 Unicode）重写两个 lnk（target→TokenDetailsNative.exe、icon→dist\token_speed.ico、wd→dist），回读三字段逐一比对通过；SHChangeNotify 刷新图标缓存后桌面图标恢复（蓝色 ico + 中文标签，此前空白）；点桌面快捷方式验证单实例互斥仍为 1 进程。⚠️ 真实重启自启仍待下次重启观察。
   - ⚠️ 未验证：像素级视觉（面板/详情/菜单中文显示）——凌晨锁屏 BitBlt 被拒，待用户回来看；长跑内存趋势；真实重启自启。
   - 性能结论（P1 实测延续）：单进程 ~39MB 私有 / CPU 4.2-4.5% 单核（流式期间），对照旧版 142MB / 6.5%。
 - 2026-10-05 03:0x 方案落盘，P1 开工
