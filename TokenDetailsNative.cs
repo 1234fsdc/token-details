@@ -678,6 +678,8 @@ class TDN
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, ref RECT r);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumCb cb, IntPtr l);
+    [DllImport("user32.dll")] static extern bool SetCapture(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool TrackPopupMenu(IntPtr menu, uint flags, int x, int y, uint rsv, IntPtr h, uint rsv2);
     [DllImport("user32.dll")] static extern IntPtr CreatePopupMenu();
@@ -704,8 +706,8 @@ class TDN
 
     const uint WS_POPUP = 0x80000000;
     const int WS_EX_LAYERED = 0x80000, WS_EX_TRANSPARENT = 0x20, WS_EX_TOOLWINDOW = 0x80,
-              WS_EX_NOACTIVATE = 0x8000000, WS_EX_TOPMOST = 0x8;
-    const int SW_HIDE = 0, SW_SHOWNOACTIVATE = 4;
+              WS_EX_NOACTIVATE = 0x8000000, WS_EX_TOPMOST = 0x8, WS_EX_APPWINDOW = 0x40000;
+    const int SW_HIDE = 0, SW_SHOWNOACTIVATE = 4, SW_SHOWNORMAL = 1;
     const uint ULW_ALPHA = 2, WM_APP = 0x8000, WM_COMMAND = 0x0111;
 
     static IntPtr OverlayHwnd;
@@ -729,10 +731,23 @@ class TDN
         if (m == WM_COMMAND && cmd == 3) { ToggleDetail(); return IntPtr.Zero; }
         if (h == DetailHwnd)
         {
-            if (m == 0x0201)   // WM_LBUTTONDOWN：关闭按钮/标签页切换
+            if (m == WM_LBUTTONDOWN)   // 详情任意位置可拖动；未移动时保留按钮/页签点击
             {
                 int px = (short)(l.ToInt64() & 0xffff), py = (short)((l.ToInt64() >> 16) & 0xffff);
                 PDown++; PHitX = px; PHitY = py;
+                BeginDetailDrag();
+                return IntPtr.Zero;
+            }
+            if (m == WM_MOUSEMOVE)
+            {
+                MoveDetailDrag();
+                return IntPtr.Zero;
+            }
+            if (m == WM_LBUTTONUP)
+            {
+                bool dragged = EndDetailDrag();
+                if (dragged) return IntPtr.Zero;
+                int px = (short)(l.ToInt64() & 0xffff), py = (short)((l.ToInt64() >> 16) & 0xffff);
                 if (px >= CloseRect.X && px <= CloseRect.X + CloseRect.W
                     && py >= CloseRect.Y && py <= CloseRect.Y + CloseRect.H)
                 {
@@ -1722,9 +1737,10 @@ class TDN
                 if (!SystemParametersInfoW(0x0048, 0, ref wa, 0)) { wa.r = 1200; wa.b = 700; }
                 DetailX = wa.r - 470; DetailY = wa.t + 40;
             }
-            ShowWindow(DetailHwnd, SW_SHOWNOACTIVATE);
+            ShowWindow(DetailHwnd, SW_SHOWNORMAL);
+            SetForegroundWindow(DetailHwnd);
             SetWindowPos(DetailHwnd, HWND_TOP, DetailX, DetailY, 0, 0,
-                         SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                         SWP_NOSIZE | SWP_SHOWWINDOW);
             LastDetailCalc = 0;
             DetailDataTick();
         }
@@ -1870,6 +1886,8 @@ class TDN
         DetailScale = dpi / 96.0;
         double s = DetailScale;
         int w = (int)Math.Round(440 * s), h = (int)Math.Round(660 * s);
+        int headerH = (int)Math.Round(78 * s);
+        int contentTop = (int)Math.Round(90 * s);
         using (Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
         {
             using (Graphics g = Graphics.FromImage(bmp))
@@ -1878,31 +1896,7 @@ class TDN
                 StringFormat typ = StringFormat.GenericTypographic;
                 using (SolidBrush pb = new SolidBrush(PaperD))
                     g.FillRectangle(pb, 0, 0, w, h);
-                // 头部日期只占首行右侧，避免侵入第一张数据卡
-                using (SolidBrush b = new SolidBrush(VermD))
-                    g.FillEllipse(b, w - (int)Math.Round(58 * s), (int)Math.Round(18 * s),
-                                  (int)Math.Round(7 * s), (int)Math.Round(7 * s));
-                using (SolidBrush b = new SolidBrush(MutedD))
-                {
-                    string stamp = DateTime.Now.ToString("MM-dd");
-                    SizeF stampSize = g.MeasureString(stamp, DFMeta, PointF.Empty, typ);
-                    g.DrawString(stamp, DFMeta, b,
-                                 w - (float)Math.Round(46 * s) - stampSize.Width,
-                                 (float)Math.Round(12 * s), typ);
-                }
-                // 工具切换（右对齐）：ZCode | Codex
-                string[] tools = new string[] { "ZCode", "Codex" };
-                int toolX = w - (int)Math.Round(150 * s);
-                for (int i = 0; i < 2; i++)
-                {
-                    bool on = i == DetailTool;
-                    using (SolidBrush b = new SolidBrush(on ? InkD : MutedD))
-                        g.DrawString(tools[i], DFMeta, b, toolX, (int)Math.Round(22 * s), typ);
-                    SizeF tw2 = g.MeasureString(tools[i], DFMeta, PointF.Empty, typ);
-                    ToolRects[i].X = toolX; ToolRects[i].Y = (int)Math.Round(14 * s);
-                    ToolRects[i].W = (int)Math.Round(tw2.Width); ToolRects[i].H = (int)Math.Round(20 * s);
-                    toolX += (int)Math.Round(tw2.Width) + (int)Math.Round(14 * s);
-                }
+                // 第一行：页面标签；右上角日期与关闭按钮各占独立区域
                 string[] tabs = new string[] { "总览", "速度", "总量" };
                 int tabX = (int)Math.Round(26 * s);
                 for (int i = 0; i < 3; i++)
@@ -1915,12 +1909,19 @@ class TDN
                     TabRects[i].W = (int)Math.Round(tw.Width); TabRects[i].H = (int)Math.Round(28 * s);
                     tabX += (int)Math.Round(tw.Width) + (int)Math.Round(18 * s);
                 }
-                // 关闭按钮：右上角固定命中区，详情只隐藏不销毁
+                using (SolidBrush b = new SolidBrush(MutedD))
+                {
+                    string stamp = DateTime.Now.ToString("MM-dd");
+                    SizeF stampSize = g.MeasureString(stamp, DFMeta, PointF.Empty, typ);
+                    g.DrawString(stamp, DFMeta, b,
+                                 w - (float)Math.Round(46 * s) - stampSize.Width,
+                                 (float)Math.Round(12 * s), typ);
+                }
+                // X：单独的右上角关闭按钮
                 CloseRect.X = w - (int)Math.Round(34 * s);
                 CloseRect.Y = (int)Math.Round(7 * s);
                 CloseRect.W = (int)Math.Round(26 * s);
                 CloseRect.H = (int)Math.Round(30 * s);
-                using (SolidBrush b = new SolidBrush(MutedD))
                 using (Pen p = new Pen(MutedD, (float)Math.Max(1.5, 1.5 * s)))
                 {
                     float cx = CloseRect.X + CloseRect.W / 2f;
@@ -1930,12 +1931,37 @@ class TDN
                     g.DrawLine(p, cx + 5 * (float)s, cy - 5 * (float)s,
                                   cx - 5 * (float)s, cy + 5 * (float)s);
                 }
+                // 第二行：独立的来源分段选择器
+                string[] tools = new string[] { "ZCode", "Codex" };
+                int toolY = (int)Math.Round(48 * s);
+                int toolLeft = (int)Math.Round(26 * s);
+                int toolRight = w - (int)Math.Round(26 * s);
+                int toolW = (toolRight - toolLeft) / 2;
+                for (int i = 0; i < 2; i++)
+                {
+                    ToolRects[i].X = toolLeft + i * toolW;
+                    ToolRects[i].Y = toolY - (int)Math.Round(5 * s);
+                    ToolRects[i].W = toolW;
+                    ToolRects[i].H = (int)Math.Round(28 * s);
+                    bool on = i == DetailTool;
+                    if (on)
+                    {
+                        using (SolidBrush b = new SolidBrush(Color.FromArgb(255, 0xF0, 0xEC, 0xE1)))
+                            g.FillRectangle(b, ToolRects[i].X, ToolRects[i].Y,
+                                            ToolRects[i].W, ToolRects[i].H);
+                    }
+                    SizeF tw2 = g.MeasureString(tools[i], DFMeta, PointF.Empty, typ);
+                    using (SolidBrush b = new SolidBrush(on ? InkD : MutedD))
+                        g.DrawString(tools[i], DFMeta, b,
+                                     ToolRects[i].X + (ToolRects[i].W - tw2.Width) / 2f,
+                                     toolY, typ);
+                }
                 using (SolidBrush b = new SolidBrush(LineD))
-                    g.FillRectangle(b, 0, (int)Math.Round(44 * s), w, 1);
+                    g.FillRectangle(b, 0, headerH, w, 1);
                 // 内容区：滚动态裁剪，绘制 y 随 DetailScroll 上移
                 System.Drawing.Drawing2D.GraphicsState gs = g.Save();
-                g.SetClip(new Rectangle(0, (int)Math.Round(45 * s), w, h - (int)Math.Round(45 * s)));
-                int y = (int)Math.Round(56 * s) - DetailScroll;
+                g.SetClip(new Rectangle(0, contentTop, w, h - contentTop));
+                int y = contentTop + (int)Math.Round(10 * s) - DetailScroll;
                 SumData sm = DD.Sum;
                 if (DetailPage == 0)
                 {
@@ -2090,12 +2116,59 @@ class TDN
         wc.inst = Marshal.GetHINSTANCE(typeof(TDN).Module);
         wc.name = "TokenDetailsDetail";
         RegisterClassW(ref wc);
-        uint ex = (uint)(0x80000 | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);   // 0x80000=WS_EX_LAYERED；详情不强制置顶
+        uint ex = (uint)(0x80000 | WS_EX_APPWINDOW);   // 分层普通窗口：仅详情出现在任务栏
         DetailHwnd = CreateWindowExW(ex, "TokenDetailsDetail", "Token Details 详情", WS_POPUP,
             0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, wc.inst, IntPtr.Zero);
     }
 
     static int PDown, PHit, PHitX, PHitY;
+    static bool DetailDragArmed, DetailDragging;
+    static int DetailDragStartX, DetailDragStartY, DetailDragOriginX, DetailDragOriginY;
+    const uint WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202;
+    static void BeginDetailDrag()
+    {
+        POINT p = default(POINT);
+        GetCursorPos(ref p);
+        DetailDragStartX = p.x; DetailDragStartY = p.y;
+        DetailDragOriginX = DetailX; DetailDragOriginY = DetailY;
+        DetailDragArmed = true; DetailDragging = false;
+        SetCapture(DetailHwnd);
+    }
+    static void MoveDetailDrag()
+    {
+        if (!DetailDragArmed) return;
+        POINT p = default(POINT);
+        GetCursorPos(ref p);
+        int dx = p.x - DetailDragStartX, dy = p.y - DetailDragStartY;
+        if (!DetailDragging && Math.Abs(dx) + Math.Abs(dy) >= 6) DetailDragging = true;
+        if (DetailDragging)
+        {
+            DetailX = DetailDragOriginX + dx; DetailY = DetailDragOriginY + dy;
+            RECT wa = new RECT();
+            if (SystemParametersInfoW(0x0048, 0, ref wa, 0))
+            {
+                int dpiW = (int)Math.Round(440 * DetailScale), dpiH = (int)Math.Round(660 * DetailScale);
+                int minX = wa.l - dpiW + (int)Math.Round(40 * DetailScale);
+                int maxX = wa.r - (int)Math.Round(40 * DetailScale);
+                int minY = wa.t;
+                int maxY = wa.b - (int)Math.Round(40 * DetailScale);
+                if (DetailX < minX) DetailX = minX;
+                if (DetailX > maxX) DetailX = maxX;
+                if (DetailY < minY) DetailY = minY;
+                if (DetailY > maxY) DetailY = maxY;
+            }
+            SetWindowPos(DetailHwnd, HWND_TOP, DetailX, DetailY, 0, 0,
+                         SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+    }
+    static bool EndDetailDrag()
+    {
+        if (!DetailDragArmed) return false;
+        bool moved = DetailDragging;
+        DetailDragArmed = false; DetailDragging = false;
+        ReleaseCapture();
+        return moved;
+    }
     static void DetailMouseDown(int px, int py)
     {
         for (int i = 0; i < 2; i++)
