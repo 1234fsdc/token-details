@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Details · 详情面板风格预览</title>
+<style>
+  :root {
+    color-scheme: light;
+    --studio-bg: #dfe5e9;
+    --studio-ink: #15212a;
+    --studio-muted: #5c6a73;
+    --studio-line: rgba(21, 33, 42, .14);
+    --studio-panel: #f7fafb;
+    --studio-accent: #0e7490;
+    --studio-shadow: 0 22px 60px rgba(22, 35, 45, .18);
+  }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    background: var(--studio-bg);
+    color: var(--studio-ink);
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+  }
+  button { font: inherit; }
+  button:focus-visible { outline: 3px solid #f59e0b; outline-offset: 3px; }
+  .studio {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+  .rail {
+    padding: 34px 22px 28px;
+    background: #f5f7f8;
+    border-right: 1px solid var(--studio-line);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: auto;
+  }
+  .eyebrow {
+    color: var(--studio-accent);
+    font: 700 11px/1 "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+  }
+  h1 {
+    margin: 18px 0 12px;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(28px, 3vw, 42px);
+    line-height: 1.05;
+    letter-spacing: -.03em;
+  }
+  .rail-copy { margin: 0 0 28px; color: var(--studio-muted); max-width: 240px; }
+  .theme-list { display: grid; gap: 10px; }
+  .theme-choice {
+    width: 100%;
+    text-align: left;
+    border: 1px solid #cbd5da;
+    background: #fff;
+    color: #24333c;
+    padding: 14px 15px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: border-color .2s, background-color .2s, transform .2s;
+  }
+  .theme-choice:hover { transform: translateY(-1px); border-color: #5d7f8e; }
+  .theme-choice[aria-pressed="true"] { border-color: #0f5d70; background: #e4f2f5; }
+  .choice-name { display: block; font-weight: 800; }
+  .choice-note { display: block; margin-top: 3px; color: #60717a; font-size: 12px; }
+  .choice-swatch { display: flex; gap: 5px; margin-top: 11px; }
+  .swatch { display: block; width: 22px; height: 6px; border-radius: 2px; }
+  .rail-foot { margin-top: 28px; padding-top: 18px; border-top: 1px solid #ccd5d9; color: #63717a; font-size: 12px; }
+  .stage {
+    min-width: 0;
+    padding: 28px clamp(18px, 4vw, 58px) 60px;
+  }
+  .stage-head {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 22px;
+  }
+  .stage-title { margin: 0; font-size: 18px; letter-spacing: .01em; }
+  .stage-subtitle { margin: 4px 0 0; color: var(--studio-muted); font-size: 13px; }
+  .stage-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; }
+  .control {
+    border: 1px solid #bdcbd1;
+    background: #fff;
+    color: #26353e;
+    border-radius: 7px;
+    padding: 8px 10px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .control:hover { border-color: #537b8a; }
+  .control[data-active="true"] { background: #193d4b; color: #fff; border-color: #193d4b; }
+  .stage-grid { display: grid; grid-template-columns: minmax(0, 520px) minmax(240px, 1fr); gap: 26px; align-items: start; }
+  .canvas {
+    min-height: 760px;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    border: 1px solid rgba(24, 42, 51, .16);
+    background: #cfd9de;
+    border-radius: 16px;
+    box-shadow: inset 0 1px rgba(255,255,255,.55);
+    overflow: hidden;
+  }
+  .window-wrap { width: min(100%, 440px); }
+  .detail-window {
+    width: 100%;
+    height: 660px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--win-line);
+    border-radius: var(--win-radius);
+    background: var(--win-bg);
+    color: var(--win-ink);
+    box-shadow: var(--win-shadow);
+    position: relative;
+    transition: background-color .25s, color .25s, border-color .25s, box-shadow .25s;
+  }
+  .detail-window.is-hidden { display: none; }
+  .window-header {
+    flex: 0 0 auto;
+    border-bottom: 1px solid var(--win-line);
+    background: var(--header-bg);
+    user-select: none;
+  }
+  .header-row { min-height: 39px; display: flex; align-items: center; }
+  .page-tabs { display: flex; align-items: center; gap: 4px; padding: 7px 12px 2px; }
+  .page-tab, .source-tab {
+    border: 0;
+    background: transparent;
+    color: var(--win-muted);
+    cursor: pointer;
+    border-radius: var(--control-radius);
+    transition: background-color .18s, color .18s;
+  }
+  .page-tab { padding: 7px 9px; font-weight: 800; font-size: 14px; }
+  .page-tab:hover, .source-tab:hover { color: var(--win-ink); background: var(--hover-bg); }
+  .page-tab[aria-selected="true"] { color: var(--win-ink); background: var(--selected-bg); }
+  .header-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; padding: 0 9px; }
+  .date { color: var(--win-muted); font: 12px "Cascadia Mono", Consolas, monospace; }
+  .close-btn {
+    width: 32px; height: 32px; border: 0; background: transparent; color: var(--win-muted);
+    border-radius: var(--control-radius); cursor: pointer; font-size: 22px; line-height: 1;
+  }
+  .close-btn:hover { color: var(--win-ink); background: var(--hover-bg); }
+  .source-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px 12px 9px; }
+  .source-tab { min-height: 28px; padding: 5px 8px; font-size: 12px; }
+  .source-tab[aria-selected="true"] { background: var(--selected-bg); color: var(--win-ink); font-weight: 800; }
+  .window-content { min-height: 0; flex: 1; overflow: auto; padding: 15px 13px 24px; scrollbar-color: var(--scroll-thumb) transparent; }
+  .window-content::-webkit-scrollbar { width: 7px; }
+  .window-content::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 6px; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--win-line); padding-bottom: 17px; margin-bottom: 18px; }
+  .kpi { min-width: 0; padding: 0 10px; border-left: 1px solid var(--win-line); }
+  .kpi:first-child { border-left: 0; padding-left: 0; }
+  .kpi-label { color: var(--win-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi-value { margin-top: 3px; color: var(--win-ink); font: 800 20px/1.1 "Cascadia Mono", Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi-value.hot { color: var(--hot); }
+  .section { margin-top: 20px; }
+  .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 10px; color: var(--win-muted); font-size: 12px; font-weight: 800; letter-spacing: .02em; }
+  .section-title small { font-weight: 500; opacity: .8; }
+  .row-list { display: grid; gap: 2px; }
+  .data-row {
+    min-width: 0;
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    min-height: 47px;
+    padding: 7px 0 9px;
+    border-bottom: 1px solid var(--win-line);
+  }
+  .data-row:hover { background: var(--hover-bg); }
+  .data-row::after { content: ""; position: absolute; left: 0; bottom: -1px; height: 2px; width: var(--bar, 35%); background: var(--bar-color, var(--hot)); }
+  .row-main, .row-meta { min-width: 0; }
+  .row-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; font-size: 12px; }
+  .row-meta { color: var(--win-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+  .row-value { color: var(--bar-color, var(--hot)); font: 800 15px/1 "Cascadia Mono", Consolas, monospace; white-space: nowrap; text-align: right; }
+  .empty { padding: 26px 9px; border: 1px dashed var(--win-line); color: var(--win-muted); text-align: center; font-size: 12px; }
+  .chart { display: grid; grid-template-columns: repeat(7, 1fr); align-items: end; gap: 5px; height: 105px; padding-top: 15px; }
+  .bar-col { min-width: 0; display: grid; grid-template-rows: 1fr auto; gap: 6px; height: 100%; align-items: end; }
+  .bar { width: 100%; min-height: 3px; height: var(--height); background: var(--bar-color, var(--hot)); border-radius: 2px 2px 0 0; }
+  .bar-label { color: var(--win-muted); font: 10px "Cascadia Mono", Consolas, monospace; text-align: center; }
+  .compare-row { grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, .8fr) auto; }
+  .compare-cell { min-width: 0; color: var(--win-ink); font: 700 11px "Cascadia Mono", Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .compare-cell.z { color: var(--zcode); }
+  .compare-cell.c { color: var(--codex); }
+  .compare-cell.delta { color: var(--hot); text-align: right; }
+  .about {
+    padding: 21px 22px;
+    border: 1px solid rgba(24,42,51,.14);
+    border-radius: 12px;
+    background: rgba(255,255,255,.55);
+  }
+  .about h2 { margin: 0 0 8px; font-size: 16px; }
+  .about p { margin: 0 0 14px; color: #52636c; font-size: 13px; }
+  .about-list { display: grid; gap: 11px; }
+  .about-item { padding-left: 13px; border-left: 3px solid var(--item-color, #5e7c89); }
+  .about-item strong { display: block; font-size: 13px; }
+  .about-item span { display: block; margin-top: 2px; color: #5b6c75; font-size: 12px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .reopen { display: none; margin-top: 12px; width: 100%; }
+  .reopen.visible { display: block; }
+
+  /* Theme 1: Porcelain Swiss */
+  .theme-porcelain { --win-bg: #fffdf8; --header-bg: #fffdf8; --win-ink: #1a1d22; --win-muted: #8b897f; --win-line: #e8e3d8; --selected-bg: #f0ece1; --hover-bg: #f7f3ea; --scroll-thumb: #cfc6b5; --hot: #dc2626; --win-radius: 3px; --control-radius: 2px; --win-shadow: 0 18px 38px rgba(40, 31, 17, .2); --zcode: #1d4ed8; --codex: #c2410c; }
+  .theme-porcelain .window-header { border-bottom-color: #ddd5c6; }
+  .theme-porcelain .window-content { font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+  /* Theme 2: Light Grid */
+  .theme-grid { --win-bg: #f8fafc; --header-bg: #182633; --win-ink: #1c2b36; --win-muted: #647684; --win-line: #d6e0e5; --selected-bg: #dceff4; --hover-bg: #edf5f7; --scroll-thumb: #aabdc6; --hot: #dc2626; --win-radius: 2px; --control-radius: 2px; --win-shadow: 0 20px 40px rgba(27, 51, 65, .22); --zcode: #2563eb; --codex: #c2410c; }
+  .theme-grid .window-header { color: #eef6f8; }
+  .theme-grid .page-tab, .theme-grid .source-tab, .theme-grid .date, .theme-grid .close-btn { color: #b7c7cf; }
+  .theme-grid .page-tab[aria-selected="true"], .theme-grid .source-tab[aria-selected="true"] { color: #10212b; background: #d4e7eb; }
+  .theme-grid .kpi-grid { background: #eef3f5; border: 1px solid #d4dfe4; padding: 12px 8px 14px; }
+  .theme-grid .data-row { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 52px; }
+  .theme-grid .row-name, .theme-grid .row-value { font-family: "Cascadia Mono", Consolas, monospace; }
+  .theme-grid .section-title { text-transform: uppercase; font: 700 10px "Cascadia Mono", Consolas, monospace; letter-spacing: .08em; }
+  /* Theme 3: OLED Night */
+  .theme-night { --win-bg: #0b1117; --header-bg: #111a23; --win-ink: #e6edf3; --win-muted: #84919d; --win-line: #24313b; --selected-bg: #243645; --hover-bg: #14232e; --scroll-thumb: #40505d; --hot: #e06b75; --win-radius: 4px; --control-radius: 3px; --win-shadow: 0 22px 50px rgba(0, 0, 0, .45); --zcode: #4da3ff; --codex: #f2b84b; }
+  .theme-night .window-header { border-bottom-color: #293b49; }
+  .theme-night .data-row::before { content: ""; position: absolute; left: -13px; top: 8px; bottom: 8px; width: 3px; background: var(--bar-color, var(--hot)); }
+  .theme-night .kpi-grid { border-bottom-color: #2a3b47; }
+  .theme-night .row-name { font-family: "Cascadia Mono", Consolas, monospace; font-weight: 600; }
+  .theme-night .row-value, .theme-night .kpi-value { color: var(--bar-color, var(--hot)); }
+  /* Theme 4: Comparative */
+  .theme-compare { --win-bg: #f2f5f7; --header-bg: #ffffff; --win-ink: #202a31; --win-muted: #63737c; --win-line: #d3dde2; --selected-bg: #e4edf1; --hover-bg: #eaf2f5; --scroll-thumb: #aebec5; --hot: #b91c1c; --win-radius: 6px; --control-radius: 4px; --win-shadow: 0 22px 48px rgba(29, 49, 59, .2); --zcode: #2563eb; --codex: #ea580c; }
+  .theme-compare .window-header { border-bottom: 3px solid #202a31; }
+  .theme-compare .source-tabs { grid-template-columns: repeat(3, 1fr); }
+  .theme-compare .data-row { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  .theme-compare .data-row::after { background: linear-gradient(90deg, var(--zcode) 0 50%, var(--codex) 50% 100%); }
+  .theme-compare .kpi-grid { background: #fff; border: 1px solid #d3dde2; padding: 12px 8px 14px; }
+  .theme-compare .row-value { background: #fff; border: 1px solid #d3dde2; padding: 4px 6px; }
+  .theme-compare .source-tab[aria-selected="true"] { box-shadow: inset 0 -2px var(--zcode); }
+  @media (max-width: 980px) {
+    .studio { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--studio-line); padding: 24px 18px; }
+    .rail-copy { max-width: none; }
+    .theme-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stage-grid { grid-template-columns: minmax(0, 520px); justify-content: center; }
+    .about { display: none; }
+  }
+  @media (max-width: 560px) {
+    .stage { padding: 18px 10px 35px; }
+    .stage-head { display: block; }
+    .stage-actions { justify-content: start; margin-top: 13px; }
+    .canvas { min-height: auto; padding: 8px; border-radius: 10px; }
+    .detail-window { height: 690px; }
+    .theme-list { grid-template-columns: 1fr; }
+    .data-row { grid-template-columns: minmax(0, 1.15fr) minmax(0, .9fr) auto; gap: 5px; }
+    .row-meta { font-size: 9px; }
+    .kpi { padding: 0 6px; }
+    .kpi-value { font-size: 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<main class="studio">
+  <aside class="rail" aria-label="详情面板风格选择">
+    <div class="eyebrow">Token Details / Visual Lab</div>
+    <h1>详情面板<br>风格比稿</h1>
+    <p class="rail-copy">同一组真实统计语义，四套不同视觉系统。先选你愿意长期盯着看的那一个。</p>
+    <div class="theme-list" role="group" aria-label="风格方向">
+      <button class="theme-choice" data-theme="porcelain" aria-pressed="true">
+        <span class="choice-name">Porcelain Swiss</span><span class="choice-note">纸面仪表 · 安静、克制、最低迁移成本</span>
+        <span class="choice-swatch"><i class="swatch" style="background:#fffdf8"></i><i class="swatch" style="background:#1a1d22"></i><i class="swatch" style="background:#ff4d2e"></i></span>
+      </button>
+      <button class="theme-choice" data-theme="grid" aria-pressed="false">
+        <span class="choice-name">Light Grid</span><span class="choice-note">Query Console · 横向扫描和比较优先</span>
+        <span class="choice-swatch"><i class="swatch" style="background:#182633"></i><i class="swatch" style="background:#f8fafc"></i><i class="swatch" style="background:#2563eb"></i></span>
+      </button>
+      <button class="theme-choice" data-theme="night" aria-pressed="false">
+        <span class="choice-name">OLED Night</span><span class="choice-note">Terminal Telemetry · 夜间开发和长时间监控</span>
+        <span class="choice-swatch"><i class="swatch" style="background:#0b1117"></i><i class="swatch" style="background:#e6edf3"></i><i class="swatch" style="background:#4da3ff"></i></span>
+      </button>
+      <button class="theme-choice" data-theme="compare" aria-pressed="false">
+        <span class="choice-name">Comparative Ledger</span><span class="choice-note">双源对账 · ZCode / Codex 横向比较</span>
+        <span class="choice-swatch"><i class="swatch" style="background:#f2f5f7"></i><i class="swatch" style="background:#2563eb"></i><i class="swatch" style="background:#ea580c"></i></span>
+      </button>
+    </div>
+    <div class="rail-foot">预览使用静态示例数据，不读取本机数据库；样式确认后再移植到 native 详情窗口。</div>
+  </aside>
+
+  <section class="stage">
+    <header class="stage-head">
+      <div>
+        <h2 class="stage-title" id="themeTitle">Porcelain Swiss / 纸面仪表</h2>
+        <p class="stage-subtitle" id="themeSubtitle">延续当前纸面语言，收紧层级与数字列，让高密度信息更安静。</p>
+      </div>
+      <div class="stage-actions" aria-label="预览状态控制">
+        <button class="control" data-state="live" data-active="true">正常数据</button>
+        <button class="control" data-state="long" data-active="false">长标题</button>
+        <button class="control" data-state="empty" data-active="false">空态</button>
+        <button class="control" data-state="codex" data-active="false">Codex 样本</button>
+      </div>
+    </header>
+
+    <div class="stage-grid">
+      <div class="canvas" id="canvas">
+        <div class="window-wrap">
+          <section class="detail-window theme-porcelain" id="detailWindow" aria-label="Token Details 详情预览">
+            <header class="window-header" id="dragHandle">
+              <div class="header-row">
+                <nav class="page-tabs" role="tablist" aria-label="详情页">
+                  <button class="page-tab" data-page="overview" role="tab" aria-selected="true">总览</button>
+                  <button class="page-tab" data-page="speed" role="tab" aria-selected="false">速度</button>
+                  <button class="page-tab" data-page="total" role="tab" aria-selected="false">总量</button>
+                </nav>
+                <div class="header-tools"><span class="date">10-06</span><button class="close-btn" id="closePreview" aria-label="关闭详情预览" title="关闭详情预览">×</button></div>
+              </div>
+              <div class="source-tabs" role="tablist" aria-label="数据来源">
+                <button class="source-tab" data-source="zcode" role="tab" aria-selected="true">ZCode</button>
+                <button class="source-tab" data-source="codex" role="tab" aria-selected="false">Codex</button>
+                <button class="source-tab" data-source="compare" role="tab" aria-selected="false">对比</button>
+              </div>
+            </header>
+            <div class="window-content" id="content" tabindex="0"></div>
+          </section>
+          <button class="control reopen" id="reopen" aria-label="重新打开详情预览">重新打开详情预览</button>
+        </div>
+      </div>
+
+      <aside class="about" aria-live="polite">
+        <h2>当前方案</h2>
+        <p id="aboutCopy">纸面仪表把重点放在稳定阅读和数据层级，不用装饰性容器分割内容。</p>
+        <div class="about-list">
+          <div class="about-item" style="--item-color:#2563eb"><strong>信息密度</strong><span id="densityCopy">连续 ledger 行，模型与会话纵向扫描。</span></div>
+          <div class="about-item" style="--item-color:#0a8f46"><strong>适用场景</strong><span id="fitCopy">日常查看、低干扰常驻。</span></div>
+          <div class="about-item" style="--item-color:#d97706"><strong>迁移成本</strong><span id="costCopy">低：主要替换颜色、字体与间距。</span></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  const themes = {
+    porcelain: { title: "Porcelain Swiss / 纸面仪表", subtitle: "延续当前纸面语言，收紧层级与数字列，让高密度信息更安静。", about: "纸面仪表把重点放在稳定阅读和数据层级，不用装饰性容器分割内容。", density: "连续 ledger 行，模型与会话纵向扫描。", fit: "日常查看、低干扰常驻。", cost: "低：主要替换颜色、字体与间距。" },
+    grid: { title: "Light Grid / Query Console", subtitle: "像查询终端一样组织列数据，优先解决多模型横向比较。", about: "浅色网格把供应商、速度、次数和最后时间锁进稳定列，适合快速扫读。", density: "列边界明确，数值用等宽字体对齐。", fit: "多模型比较、排查异常、查看明细。", cost: "中：需要调整行与表格列的绘制。" },
+    night: { title: "OLED Night / Terminal Telemetry", subtitle: "为夜间编码准备的深色 telemetry ledger，状态 rail 代替大块装饰。", about: "深色方案降低长时间查看的视觉负担，速度和状态仍保持足够对比度。", density: "左侧状态 rail + 固定数值列。", fit: "夜间开发、持续监控、长时间运行。", cost: "中：需要完整替换原生颜色和 hover 状态。" },
+    compare: { title: "Comparative Ledger / 双源对账", subtitle: "把 ZCode 与 Codex 变成同一张对账表，强调差值和来源。", about: "双源对账适合确认两套工具的速度与 token 差异，不依赖颜色单独传达来源。", density: "来源列并排，差值固定在最右侧。", fit: "ZCode / Codex 成本和速度比较。", cost: "中高：需要 native 侧合并双源模型键。" }
+  };
+  const base = {
+    zcode: {
+      sum: { requests: "1,774 次", speed: "42.3 t/s", tokens: "1.97亿", rpm: "1.4 次/分", ttft: "7.0 s", io: "1.95亿 / 191.8万" },
+      models: [
+        ["gpt-6-astra", "AiKan · 127 次 · 0.4 次/分", "26.0", "red", 22],
+        ["inclusionai/ling-3.1-flash", "Kilo · 379 次 · 1.5 次/分", "85.8", "green", 72],
+        ["dots-studio/dots-3-note-preview:free", "Kilo · 338 次 · 0.5 次/分", "75.6", "amber", 63],
+        ["Atria-Dawn-Preview", "Atria · 206 次 · 0.6 次/分", "9.1", "red", 9],
+        ["deepseek-v4.1", "VyceAi · 16 次 · 0.2 次/分", "15.0", "red", 13]
+      ],
+      sessions: [
+        ["90分钟后复测 native 长跑内存", "首字 17.9s · 0.2 次/分 · 1,518 次 · 10-06 01:18", "30.9", "red", 31],
+        ["安卓应用在Windows上运行", "首字 4.3s · 0.7 次/分 · 40 次 · 10-06 01:22", "37.5", "red", 38],
+        ["删除 opencode2api 快捷方式", "首字 4.8s · 2.2 次/分 · 20 次 · 10-06 01:28", "85.5", "green", 71]
+      ],
+      totals: [
+        ["GLM-5.3-Flash", "account · 106,449,736 tok · 704 次", "54%", "red", 54],
+        ["inclusionai/ling-3.1-flash", "Kilo · 35,356,887 tok · 379 次", "18%", "red", 18],
+        ["Atria-Dawn-Preview", "Atria · 22,514,313 tok · 206 次", "11%", "red", 11],
+        ["dots-studio/dots-3-note-preview:free", "Kilo · 19,626,343 tok · 338 次", "10%", "red", 10],
+        ["gpt-6-astra", "AiKan · 12,524,819 tok · 127 次", "6%", "red", 6]
+      ],
+      days: [42, 58, 31, 70, 48, 94, 64]
+    },
+    codex: {
+      sum: { requests: "42 次", speed: "31.7 t/s", tokens: "642 tok", rpm: "0.8 次/分", ttft: "-", io: "400 / 242" },
+      models: [["gpt-5.6-verify", "Codex · 42 次 · 0.8 次/分", "31.7", "red", 26]],
+      sessions: [["codex_verify", "模型 gpt-5.6-verify · 首字 - · 42 次 · 10-06 01:28", "31.7", "red", 26]],
+      totals: [["gpt-5.6-verify", "Codex · 642 tok · 42 次", "100%", "red", 100]],
+      days: [0, 0, 18, 0, 0, 42, 12]
+    }
+  };
+  const longPatch = {
+    models: [["dots-studio/dots-3-note-preview:free / extremely-long-model-alias", "Kilo · 338 次 · 0.5 次/分 · 最近 8 条加权", "75.6", "amber", 63], ...base.zcode.models.slice(1)],
+    sessions: [["90分钟后复测 native 长跑内存：这是一个用于测试省略策略的超长会话标题", "首字 17.9s · 0.2 次/分 · 1,518 次 · 10-06 01:18", "30.9", "red", 31], ...base.zcode.sessions.slice(1)],
+    totals: [["dots-studio/dots-3-note-preview:free / extremely-long-model-alias", "Kilo · 19,626,343 tok · 338 次 · 10%", "10%", "red", 10], ...base.zcode.totals.slice(1)]
+  };
+  let state = { theme: "porcelain", page: "overview", source: "zcode", mode: "live", closed: false };
+  const $ = (s) => document.querySelector(s);
+  const win = $("#detailWindow"), content = $("#content"), reopen = $("#reopen");
+  const sourceLabel = (source) => source === "zcode" ? "ZCode" : source === "codex" ? "Codex" : "对比";
+  const currentData = () => {
+    if (state.mode === "empty") return { sum: { requests: "0 次", speed: "0.0 t/s", tokens: "0", rpm: "0.0 次/分", ttft: "-", io: "0 / 0" }, models: [], sessions: [], totals: [], days: [0,0,0,0,0,0,0] };
+    if (state.source === "compare") return base.zcode;
+    const d = base[state.source] || base.zcode;
+    if (state.mode === "long" && state.source === "zcode") return { ...d, ...longPatch };
+    return d;
+  };
+  const color = (kind) => ({ red: "#dc2626", amber: "#d97706", green: "#0a8f46" }[kind] || "#dc2626");
+  const row = (r) => `<article class="data-row" style="--bar:${r[4]}%;--bar-color:${color(r[3])}"><div class="row-main"><span class="row-name" title="${escapeHtml(r[0])}">${escapeHtml(r[0])}</span></div><div class="row-meta">${escapeHtml(r[1])}</div><strong class="row-value">${escapeHtml(r[2])}</strong></article>`;
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[ch]));
+  const empty = (label) => `<div class="empty">${label}</div>`;
+  const kpis = (items) => `<div class="kpi-grid">${items.map((x,i) => `<div class="kpi"><div class="kpi-label">${x[0]}</div><div class="kpi-value ${i === 1 ? "hot" : ""}">${x[1]}</div></div>`).join("")}</div>`;
+  const section = (title, extra, body) => `<section class="section"><h3 class="section-title"><span>${title}</span><small>${extra || ""}</small></h3>${body}</section>`;
+  const chart = (days) => `<div class="chart">${days.map((v,i) => `<div class="bar-col"><div class="bar" style="--height:${Math.max(3,v)}%;--bar-color:${v === Math.max(...days) && v > 0 ? "#dc2626" : "#7395a2"}"></div><span class="bar-label">${["-6","-5","-4","-3","-2","-1","今"][i]}</span></div>`).join("")}</div>`;
+  const compareRows = () => {
+    const z = base.zcode.models, c = base.codex.models;
+    const merged = [["gpt-6-astra", "26.0", "—", "ZCode +26.0"], ["gpt-5.6-verify", "—", "31.7", "Codex +31.7"], ["inclusionai/ling-3.1-flash", "85.8", "—", "ZCode +85.8"]];
+    return merged.map(r => `<article class="data-row compare-row"><span class="row-name">${escapeHtml(r[0])}</span><span class="compare-cell z">${r[1]} t/s</span><span class="compare-cell c">${r[2]} t/s</span><span class="compare-cell delta">${escapeHtml(r[3])}</span></article>`).join("");
+  };
+  function render() {
+    const d = currentData();
+    win.className = `detail-window theme-${state.theme}`;
+    win.classList.toggle("is-hidden", state.closed);
+    reopen.classList.toggle("visible", state.closed);
+    document.querySelectorAll(".theme-choice").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.theme === state.theme)));
+    const meta = themes[state.theme];
+    $("#themeTitle").textContent = meta.title; $("#themeSubtitle").textContent = meta.subtitle;
+    $("#aboutCopy").textContent = meta.about; $("#densityCopy").textContent = meta.density; $("#fitCopy").textContent = meta.fit; $("#costCopy").textContent = meta.cost;
+    document.querySelectorAll(".page-tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.page === state.page)));
+    document.querySelectorAll(".source-tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.source === state.source)));
+    document.querySelectorAll(".control[data-state]").forEach(b => b.dataset.active = String(b.dataset.state === state.mode));
+    if (state.page === "overview") {
+      const modelBody = state.mode === "empty" ? empty("今日暂无数据") : state.source === "compare" ? compareRows() : (d.models.length ? `<div class="row-list">${d.models.map(row).join("")}</div>` : empty("今日暂无数据"));
+      content.innerHTML = kpis([["今日请求", d.sum.requests], ["平均速度", d.sum.speed], ["今日 TOKENS", d.sum.tokens]]) + section("每模型速度 · 今日", state.source === "compare" ? "对比预览" : sourceLabel(state.source), modelBody) + section("活跃会话 · 30 分钟窗口", "", d.sessions.length ? `<div class="row-list">${d.sessions.map(row).join("")}</div>` : empty("30 分钟内无活动会话"));
+    } else if (state.page === "speed") {
+      const modelBody = state.mode === "empty" ? empty("今日暂无数据") : state.source === "compare" ? compareRows() : (d.models.length ? `<div class="row-list">${d.models.map(row).join("")}</div>` : empty("今日暂无数据"));
+      content.innerHTML = kpis([["平均 Token 速度", d.sum.speed], ["平均请求速度", d.sum.rpm], ["平均首字速度", d.sum.ttft]]) + section("每模型速度 · 今日", "最近 8 条加权", modelBody) + section("会话速度 · 30 分钟窗口", "", d.sessions.length ? `<div class="row-list">${d.sessions.map(row).join("")}</div>` : empty("30 分钟内无活动会话"));
+    } else {
+      const modelBody = state.source === "compare" ? compareRows() : (d.totals.length ? `<div class="row-list">${d.totals.map(row).join("")}</div>` : empty("今日暂无数据"));
+      const sessionBody = d.sessions.length ? `<div class="row-list">${d.sessions.map(r => row([r[0], r[1], r[2], r[3], r[4]])).join("")}</div>` : empty("今日暂无数据");
+      const compressionBody = d.sessions.length ? `<div class="row-list">${row(["90分钟后复测 native 长跑内存", "1 次 · 10-06 01:28", "", "red", 0])}</div>` : empty("30 天内无压缩会话");
+      content.innerHTML = kpis([["今日 TOKENS", d.sum.tokens], ["今日请求", d.sum.requests], ["输入 / 输出", d.sum.io]]) + section("按模型 · 今日", state.source === "compare" ? "ZCode / Codex" : "", modelBody) + section("按会话 · 今日", "", sessionBody) + section("会话压缩 · 30 天内 1 次", "", compressionBody) + (d.days.some(Boolean) ? section("近 7 日 token", "", chart(d.days)) : "");
+    }
+  }
+  document.querySelectorAll(".theme-choice").forEach(b => b.addEventListener("click", () => { state.theme = b.dataset.theme; render(); }));
+  document.querySelectorAll(".page-tab").forEach(b => b.addEventListener("click", () => { state.page = b.dataset.page; render(); content.scrollTop = 0; }));
+  document.querySelectorAll(".source-tab").forEach(b => b.addEventListener("click", () => { state.source = b.dataset.source; render(); content.scrollTop = 0; }));
+  document.querySelectorAll(".control[data-state]").forEach(b => b.addEventListener("click", () => { state.mode = b.dataset.state; if (state.mode === "codex") state.source = "codex"; render(); content.scrollTop = 0; }));
+  $("#closePreview").addEventListener("click", () => { state.closed = true; render(); });
+  reopen.addEventListener("click", () => { state.closed = false; render(); });
+  let drag = null;
+  $("#dragHandle").addEventListener("pointerdown", (e) => { if (e.target.closest("button")) return; drag = { id: e.pointerId, x: e.clientX, y: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); });
+  $("#dragHandle").addEventListener("pointermove", (e) => { if (!drag) return; if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 6) { $("#canvas").dataset.dragged = "true"; } });
+  $("#dragHandle").addEventListener("pointerup", (e) => { if (drag) { drag = null; e.currentTarget.releasePointerCapture(e.pointerId); } });
+  render();
+})();
+</script>
+</body>
+</html>
