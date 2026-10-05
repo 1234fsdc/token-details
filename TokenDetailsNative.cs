@@ -1323,7 +1323,7 @@ class TDN
                     }
                     else
                     {
-                        string v = r.Tps + " t/s";
+                        string v = r.Tps;   // 纯数字，不带单位（面板空间紧凑）
                         SizeF vw = g.MeasureString(v, PanelFVal, PointF.Empty, typ);
                         using (SolidBrush b = new SolidBrush(SpeedC(r.TpsV)))
                             g.DrawString(v, PanelFVal, b, rx - vw.Width, y0 + 4 * (float)s, typ);
