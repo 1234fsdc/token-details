@@ -115,13 +115,14 @@ class TDN
     }
 
     // rows[i] = object[]；TEXT→string、INTEGER→long、FLOAT→double、NULL→null
-    static object[][] Query(string sql, params object[] args)
+    static object[][] Query(string sql, params object[] args) { return QueryH(DbH, sql, args); }
+    static object[][] QueryH(IntPtr db, string sql, params object[] args)
     {
         IntPtr stmt;
-        int rc = sqlite3_prepare_v2(DbH, Utf8z(sql), -1, out stmt, IntPtr.Zero);
+        int rc = sqlite3_prepare_v2(db, Utf8z(sql), -1, out stmt, IntPtr.Zero);
         if (rc != 0)
         {
-            ErrLog("db", "prepare " + Marshal.PtrToStringAnsi(sqlite3_errmsg(DbH)));
+            ErrLog("db", "prepare " + Marshal.PtrToStringAnsi(sqlite3_errmsg(db)));
             return new object[0][];
         }
         try
@@ -176,6 +177,89 @@ class TDN
 
     class ModelAgg { public string Model; public string Tps; public long Last; }
 
+    // ---- 无回报模型估算（对照 _est_map：窗口内 >=3 条完成行且输出回报合计 <20 tok
+    //      判为"无回报"，用 part 正文字符数 x 0.6 折算；数据驱动不点名模型） ----
+    const double TokPerChar = 0.6;
+    static Dictionary<string, long> EstMap(IntPtr db, object[][] rows)
+    {
+        Dictionary<string, long[]> stat = new Dictionary<string, long[]>();
+        for (int i = 0; i < rows.Length; i++)
+        {
+            object[] r = rows[i];
+            if (S(r[3]) != "completed") continue;
+            string m = S(r[2]);
+            if (m == null) continue;
+            long[] st;
+            if (!stat.TryGetValue(m, out st)) { st = new long[2]; stat[m] = st; }
+            st[0]++; st[1] += RowTok(r);
+        }
+        Dictionary<string, bool> silent = new Dictionary<string, bool>();
+        foreach (KeyValuePair<string, long[]> kv in stat)
+            if (kv.Value[0] >= 3 && kv.Value[1] < 20) silent[kv.Key] = true;
+        Dictionary<string, long> empty = new Dictionary<string, long>();
+        if (silent.Count == 0) return empty;
+        // usage.id 内嵌 message.id：msg_ 起截取、去掉尾部 _n
+        Dictionary<string, string> midOf = new Dictionary<string, string>();
+        for (int i = 0; i < rows.Length; i++)
+        {
+            object[] r = rows[i];
+            string m = S(r[2]);
+            string uid = S(r[0]);
+            if (m == null || uid == null || !silent.ContainsKey(m)) continue;
+            int j = uid.IndexOf("msg_");
+            if (j < 0) continue;
+            string tail = uid.Substring(j);
+            int k = tail.LastIndexOf('_');
+            if (k >= 0) tail = tail.Substring(0, k);
+            midOf[uid] = tail;
+        }
+        if (midOf.Count == 0) return empty;
+        Dictionary<string, long> c2t = new Dictionary<string, long>();
+        List<string> mids = new List<string>(midOf.Values);
+        try
+        {
+            for (int j = 0; j < mids.Count; j += 400)
+            {   // IN 子句分批（对照 400 批）
+                int n = Math.Min(400, mids.Count - j);
+                StringBuilder sq = new StringBuilder(
+                    "SELECT p.message_id, CAST(COALESCE(SUM("
+                    + "LENGTH(COALESCE(json_extract(p.data,'$.text'),''))"
+                    + "+LENGTH(COALESCE(json_extract(p.data,'$.state.input'),''))"
+                    + "),0)*" + TokPerChar.ToString("0.0#") + " AS INT) "
+                    + "FROM part p WHERE p.message_id IN (");
+                object[] args = new object[n];
+                for (int i = 0; i < n; i++)
+                {
+                    if (i > 0) sq.Append(',');
+                    sq.Append('?');
+                    args[i] = mids[j + i];
+                }
+                sq.Append(") GROUP BY 1");
+                object[][] rs = QueryH(db, sq.ToString(), args);
+                for (int i = 0; i < rs.Length; i++) c2t[S(rs[i][0])] = L(rs[i][1]);
+            }
+        }
+        catch (Exception) { return empty; }   // part 表异常 → 退回无估算
+        Dictionary<string, long> est = new Dictionary<string, long>();
+        foreach (KeyValuePair<string, string> kv in midOf)
+        {
+            long t;
+            if (c2t.TryGetValue(kv.Value, out t) && t > 0) est[kv.Key] = t;
+        }
+        return est;
+    }
+    // 行的有效 token：回报优先，0 时用估算（对照 calc 的 est 分支）
+    static long EffTok(object[] r, Dictionary<string, long> est)
+    {
+        long tok = RowTok(r);
+        if (tok <= 0 && est != null)
+        {
+            long et;
+            if (est.TryGetValue(S(r[0]), out et)) tok = et;
+        }
+        return tok;
+    }
+
     static ModelAgg[] SessionSpeed(string sid, string modelHint)
     {
         if (String.IsNullOrEmpty(sid) || DbH == IntPtr.Zero) return new ModelAgg[0];
@@ -196,12 +280,15 @@ class TDN
         else args = new object[] { sid };
         q += "ORDER BY COALESCE(completed_at, started_at) DESC LIMIT " + SpeedQueryLimit;
         object[][] rows = Query(q, args);
+        Dictionary<string, long> est = EstMap(DbH, rows);
+        Dictionary<object[], long> eff = new Dictionary<object[], long>();
         Dictionary<string, List<object[]>> by = new Dictionary<string, List<object[]>>();
         for (int i = 0; i < rows.Length; i++)
         {
             object[] r = rows[i];
-            long tok = RowTok(r), el = ElapsedMs(r);
+            long tok = EffTok(r, est), el = ElapsedMs(r);
             if (tok <= 0 || el <= 0) continue;   // 缺时间戳/无 usage 的行不计速度
+            eff[r] = tok;
             string mdl = S(r[2]) ?? "?";
             if (!by.ContainsKey(mdl)) by[mdl] = new List<object[]>();
             by[mdl].Add(r);
@@ -212,7 +299,7 @@ class TDN
             List<object[]> lst = by[mdl];
             int per = Math.Min(SpeedWindow, lst.Count);
             long tot = 0, el = 0;
-            for (int i = 0; i < per; i++) { tot += RowTok(lst[i]); el += ElapsedMs(lst[i]); }
+            for (int i = 0; i < per; i++) { tot += eff[lst[i]]; el += ElapsedMs(lst[i]); }
             if (el <= 0) continue;
             ModelAgg a = new ModelAgg();
             a.Model = mdl;
@@ -261,6 +348,9 @@ class TDN
     static string CurTitle = "", CurModel = "";
     static int[] CurAnchor;   // 屏幕物理像素 [l,t,w,h]
     // binder 粘滞槽位（对照 overlay_bind_loop）
+    static int LastDbChgTc;   // 最近 DB/UI 变化（rowid/标题/模型）tick，驱动自适应轮询
+    static long LastMuChk = -1, LastPrChk = -1;
+    static string LastTiChk, LastMoChk;
     static string LastTitle = "", LastModel = "";
     static double TitleEmptySince;
     static bool EverAnchored;
@@ -294,7 +384,11 @@ class TDN
         {
             ErrLog("perf", "60s ticks=" + PTicks + " walks=" + PWalks + " fast=" + PFast
                 + " dirty=" + PDirty + " uia=" + (int)PUia + "ms bind=" + (int)PBind + "ms ovl=" + (int)POvl
-                + "ms model=" + (LastModel.Length > 0 ? LastModel : "-") + " tps=" + PayTps);
+                + "ms model=" + (LastModel.Length > 0 ? LastModel : "-") + " tps=" + PayTps
+                + " page=" + DetailPage + " vis=" + (DetailVisible ? 1 : 0)
+                + " clicks=" + PDown + "/" + PHit + "@" + PHitX + "," + PHitY
+                + " tab=" + TabRects[1].X + "-" + (TabRects[1].X + TabRects[1].W) + "/" + TabRects[1].Y + "-" + (TabRects[1].Y + TabRects[1].H)
+                + " dbchg=" + (Environment.TickCount - LastDbChgTc) + "ms");
             PUia = 0; PBind = 0; POvl = 0; PTicks = 0; PWalks = 0; PFast = 0; PDirty = 0;
             GC.Collect(); ProfSw.Restart();
         }
@@ -387,9 +481,9 @@ class TDN
             if (hwnd == 0) { UiaFail(); return; }
             if (hwnd != Hwnd0) { Hwnd0 = hwnd; UiaRoot = null; }
             double age = (DateTime.Now - LastWalk).TotalMilliseconds;
-            // 快路径三引用健在 → Walk 只是恢复机制，放宽到 8s；引用缺失才 3s 紧追
+            // 快路径三引用健在 → 兜底 Walk 放宽到 15s（变化靠快路径轮询）；引用缺失才 3s 紧追
             int bs = LastWalkMs > 3000 ? 15000
-                : (TitleEl != null && ModelEl != null && AnchorEl != null) ? 8000 : 3000;
+                : (TitleEl != null && ModelEl != null && AnchorEl != null) ? 15000 : 3000;
             if (UiaRoot == null || age > bs)
             {
                 if (UiaRoot == null) UiaRoot = AutomationElement.FromHandle(new IntPtr(Hwnd0));
@@ -400,7 +494,9 @@ class TDN
             }
             else if (TitleEl != null && AnchorEl != null)
             {
-                if (Environment.TickCount - LastReadTc < 150) return;
+                // P4 自适应轮询：DB/UI 活跃期 300ms（对齐旧 binder 0.3s 节拍），空闲 1s
+                int iv = (Environment.TickCount - LastDbChgTc < 15000) ? 300 : 1000;
+                if (Environment.TickCount - LastReadTc < iv) return;
                 LastReadTc = Environment.TickCount; PFast++;
                 try
                 {
@@ -466,6 +562,11 @@ class TDN
             object[][] p1 = Query("SELECT MAX(rowid) FROM part");
             long pr = p1.Length > 0 ? L(p1[0][0]) : 0;
             double nowS = NowS();
+            if (mu != LastMuChk || pr != LastPrChk || title != LastTiChk || model != LastMoChk)
+            {
+                LastDbChgTc = Environment.TickCount;
+                LastMuChk = mu; LastPrChk = pr; LastTiChk = title; LastMoChk = model;
+            }
             object[] key = new object[] { title, model, mu, pr, (long)(nowS / 10) };
             if (LastKey != null && KeyEq(key, LastKey)) return;
             PDirty++;
@@ -628,6 +729,7 @@ class TDN
             if (m == 0x0201)   // WM_LBUTTONDOWN：标签页切换
             {
                 int px = (short)(l.ToInt64() & 0xffff), py = (short)((l.ToInt64() >> 16) & 0xffff);
+                PDown++; PHitX = px; PHitY = py;
                 DetailMouseDown(px, py);
                 return IntPtr.Zero;
             }
@@ -639,6 +741,8 @@ class TDN
             if (m == 0x0010)   // WM_CLOSE：隐藏不销毁
             { ShowWindow(DetailHwnd, SW_HIDE); DetailVisible = false; return IntPtr.Zero; }
         }
+        if (h == PanelHwnd && m == 0x0010)   // 面板同理：外部 WM_CLOSE 只隐藏，销毁会让托盘开关永久失效
+        { ShowWindow(PanelHwnd, SW_HIDE); PanelVisible = false; return IntPtr.Zero; }
         return DefWindowProcW(h, m, w, l);
     }
 
@@ -882,6 +986,7 @@ class TDN
                 OverlaySync();
                 PanelDataTick(false);
                 PanelHoverTick();
+                try { CodexDb(); } catch (Exception ec) { ErrLog("codex", ec.Message); }
                 DetailDataTick();
                 if (DetailRedraw && DetailVisible)
                 { DetailRedraw = false; try { DrawDetail(); } catch (Exception e2) { ErrLog("detail", e2.Message); } }
@@ -1028,16 +1133,18 @@ class TDN
     }
 
     // 简略面板行（对照 detail_data 的 models：聚合 + 90s 门控 + 运行中合并）
-    static PanelRow[] DetailModels()
+    static PanelRow[] DetailModels(IntPtr db, bool codex)
     {
-        if (DbH == IntPtr.Zero) return new PanelRow[0];
+        if (db == IntPtr.Zero) return new PanelRow[0];
         long cutoff = UnixMs() - 90 * 1000L;
         string q = "SELECT id, provider_id, model_id, status, started_at, first_token_at, "
             + "completed_at, duration_ms, output_tokens, reasoning_tokens FROM model_usage "
             + "WHERE query_source!='compact' "
             + "ORDER BY COALESCE(completed_at, started_at) DESC LIMIT 50";
-        object[][] rows = Query(q);
-        Dictionary<string, long> act = LastAct();
+        object[][] rows = QueryH(db, q);
+        Dictionary<string, long> est = EstMap(db, rows);
+        Dictionary<object[], long> eff = new Dictionary<object[], long>();
+        Dictionary<string, long> act = codex ? new Dictionary<string, long>() : LastAct();
         List<string> order = new List<string>();
         Dictionary<string, List<object[]>> by = new Dictionary<string, List<object[]>>();
         Dictionary<string, long> lastSeen = new Dictionary<string, long>();
@@ -1047,6 +1154,8 @@ class TDN
             string mdl = S(r[2]) == null ? "?" : S(r[2]);
             if (!by.ContainsKey(mdl)) { by[mdl] = new List<object[]>(); order.Add(mdl); }
             by[mdl].Add(r);
+            long etok = EffTok(r, est);
+            if (etok > 0 && ElapsedMs(r) > 0) eff[r] = etok;
             if (!lastSeen.ContainsKey(mdl))
                 lastSeen[mdl] = L(r[6]) != 0 ? L(r[6]) : L(r[4]);
         }
@@ -1064,8 +1173,9 @@ class TDN
             {
                 object[] r = lst[i];
                 if (S(r[3]) != "completed") continue;
-                long tok = RowTok(r), e2 = ElapsedMs(r);
-                if (tok <= 0 || e2 <= 0) continue;
+                long e2 = ElapsedMs(r);
+                long tok;
+                if (!eff.TryGetValue(r, out tok) || tok <= 0 || e2 <= 0) continue;
                 tot += tok; el += e2; n++;
             }
             if (el <= 0) continue;   // 无有效历史且非运行中不显示（运行中由合并段补占位行）
@@ -1076,7 +1186,7 @@ class TDN
             pr.Tps = tps0.ToString("0.0"); pr.TpsV = (int)Math.Round(tps0);
             items.Add(pr);
         }
-        System.Collections.ArrayList run = RunningModels();
+        System.Collections.ArrayList run = codex ? new System.Collections.ArrayList() : RunningModels();
         if (run.Count > 0)
         {
             Dictionary<string, RunInfo> runm = new Dictionary<string, RunInfo>();
@@ -1107,7 +1217,14 @@ class TDN
         LastPanelCalc = tc;
         try
         {
-            PanelRow[] rows = DetailModels();
+            PanelRow[] rows = DetailModels(DbH, false);
+            if (CodexH != IntPtr.Zero)
+            {   // 双源同显（对照 dz.models + dc.models）：zcode 在前
+                PanelRow[] cx = DetailModels(CodexH, true);
+                PanelRow[] all = new PanelRow[rows.Length + cx.Length];
+                rows.CopyTo(all, 0); cx.CopyTo(all, rows.Length);
+                rows = all;
+            }
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < rows.Length; i++)
                 sb.Append(rows[i].Model).Append('|').Append(rows[i].Prov).Append('|')
@@ -1258,7 +1375,7 @@ class TDN
                 {
                     POINT q = default(POINT); GetCursorPos(ref q);
                     SetWindowPos(PanelHwnd, IntPtr.Zero, wx + q.x - x0, wy + q.y - y0,
-                                 0, 0, 0x0001 | 0x0010);   // NOSIZE|NOACTIVATE
+                                 0, 0, 0x0001 | 0x0010 | 0x0004);   // NOSIZE|NOACTIVATE|NOZORDER
                     Thread.Sleep(20);
                 }
                 RECT nr = new RECT(); GetWindowRect(PanelHwnd, ref nr);
@@ -1336,10 +1453,10 @@ class TDN
         return n.ToString("#,0");
     }
     static long Day0()
-    {
+    {   // 本地午夜的真实 epoch ms：墙钟午夜按 UTC 计的 ms 减去时区偏移（UTC+8 应减 8h）
         DateTime d = DateTime.Today;
         return (long)(d - new DateTime(1970, 1, 1)).TotalMilliseconds
-            + (long)TimeZoneInfo.Local.GetUtcOffset(d).TotalMilliseconds;
+            - (long)TimeZoneInfo.Local.GetUtcOffset(d).TotalMilliseconds;
     }
     static string FmtMs(long ms)
     {
@@ -1347,13 +1464,13 @@ class TDN
     }
 
     // ---- 取数（对照 today_summary / session_stats / dmodels / today_by_model / today_sessions / compact_stats / week_daily） ----
-    static DetailData RefreshDetail()
+    static DetailData RefreshDetail(IntPtr db)
     {
         DetailData d = new DetailData();
         long d0 = Day0();
         double bill = 0.1;   // CACHE_BILL：缓存读按 1 折计费
         // 今日汇总
-        object[][] sr = Query(
+        object[][] sr = QueryH(db, 
             "SELECT COUNT(CASE WHEN query_source!='compact' THEN 1 END), "
             + "COALESCE(SUM(output_tokens+reasoning_tokens+input_tokens"
             + "+cache_creation_input_tokens+cache_read_input_tokens),0), "
@@ -1384,7 +1501,7 @@ class TDN
         }
         // 会话速度（30 分钟窗口）
         long cutSess = UnixMs() - 30 * 60 * 1000L;
-        object[][] ss = Query(
+        object[][] ss = QueryH(db, 
             "SELECT u.session_id, COALESCE(s.title, u.session_id), COUNT(*), "
             + "SUM(CASE WHEN u.started_at IS NOT NULL AND u.completed_at IS NOT NULL "
             + "AND u.completed_at>u.started_at THEN u.output_tokens+u.reasoning_tokens END), "
@@ -1426,12 +1543,12 @@ class TDN
         }
         d.Sess = sess.ToArray();
         // 每模型速度 · 今日（500 行窗口，无 90s 门控；cnt/rpm 来自今日完成请求）
-        object[][] rows5 = Query(
+        object[][] rows5 = QueryH(db, 
             "SELECT id, provider_id, model_id, status, started_at, first_token_at, "
             + "completed_at, duration_ms, output_tokens, reasoning_tokens FROM model_usage "
             + "WHERE query_source!='compact' "
             + "ORDER BY COALESCE(completed_at, started_at) DESC LIMIT 500");
-        object[][] stat = Query(
+        object[][] stat = QueryH(db, 
             "SELECT model_id, COUNT(*), MIN(COALESCE(completed_at,started_at)), "
             + "MAX(COALESCE(completed_at,started_at)) FROM model_usage "
             + "WHERE status='completed' AND query_source!='compact' "
@@ -1439,6 +1556,8 @@ class TDN
             + "GROUP BY model_id", d0);
         Dictionary<string, object[]> statMap = new Dictionary<string, object[]>();
         for (int i = 0; i < stat.Length; i++) statMap[S(stat[i][0])] = stat[i];
+        Dictionary<string, long> est5 = EstMap(DbH, rows5);
+        Dictionary<object[], long> eff5 = new Dictionary<object[], long>();
         List<string> order = new List<string>();
         Dictionary<string, List<object[]>> by = new Dictionary<string, List<object[]>>();
         for (int i = 0; i < rows5.Length; i++)
@@ -1446,6 +1565,8 @@ class TDN
             string m = S(rows5[i][2]) == null ? "?" : S(rows5[i][2]);
             if (!by.ContainsKey(m)) { by[m] = new List<object[]>(); order.Add(m); }
             by[m].Add(rows5[i]);
+            long etok = EffTok(rows5[i], est5);
+            if (etok > 0 && ElapsedMs(rows5[i]) > 0) eff5[rows5[i]] = etok;
         }
         List<DmData> dms = new List<DmData>();
         foreach (string m in order)
@@ -1457,8 +1578,9 @@ class TDN
             {
                 object[] r = by[m][i];
                 if (S(r[3]) != "completed") continue;
-                long tk = RowTok(r), e2 = ElapsedMs(r);
-                if (tk <= 0 || e2 <= 0) continue;
+                long e2 = ElapsedMs(r);
+                long tk;
+                if (!eff5.TryGetValue(r, out tk) || tk <= 0 || e2 <= 0) continue;
                 tot += tk; el += e2; n++;
             }
             if (el <= 0) continue;
@@ -1477,7 +1599,7 @@ class TDN
         }
         d.Dm = dms.ToArray();
         // 按模型 · 今日
-        object[][] bm = Query(
+        object[][] bm = QueryH(db, 
             "SELECT model_id, provider_id, "
             + "CAST(SUM(output_tokens+reasoning_tokens+input_tokens"
             + "+cache_creation_input_tokens+cache_read_input_tokens*"
@@ -1498,7 +1620,7 @@ class TDN
         }
         d.Bm = bml.ToArray();
         // 按会话 · 今日（子代理归并）
-        object[][] ts = Query(
+        object[][] ts = QueryH(db, 
             "SELECT CASE WHEN u.task_type='subagent_child' THEN '子代理' "
             + "ELSE COALESCE(s.title, u.session_id) END, COUNT(*), "
             + "CAST(SUM(u.output_tokens+u.reasoning_tokens+u.input_tokens"
@@ -1517,7 +1639,7 @@ class TDN
         d.Ts = tsl.ToArray();
         // 会话压缩（30 天，未归档）
         long cutCp = UnixMs() - 30L * 86400 * 1000;
-        object[][] cp = Query(
+        object[][] cp = QueryH(db, 
             "SELECT COALESCE(s.title, u.session_id), COUNT(*), MAX(u.completed_at) "
             + "FROM model_usage u LEFT JOIN session s ON s.id=u.session_id "
             + "WHERE u.query_source='compact' AND u.status='completed' "
@@ -1533,7 +1655,7 @@ class TDN
         d.Cp = cpl.ToArray();
         // 近 7 日
         long day0w = d0 - 6L * 86400 * 1000;
-        object[][] wd = Query(
+        object[][] wd = QueryH(db, 
             "SELECT strftime('%Y-%m-%d', completed_at/1000, 'unixepoch', 'localtime'), "
             + "CAST(SUM(output_tokens+reasoning_tokens+input_tokens"
             + "+cache_creation_input_tokens+cache_read_input_tokens*"
@@ -1562,7 +1684,8 @@ class TDN
         int tc = Environment.TickCount;
         if (LastDetailCalc != 0 && tc - LastDetailCalc < 1000) return;
         LastDetailCalc = tc;
-        try { DD = RefreshDetail(); DrawDetail(); }
+        IntPtr ddb = (DetailTool == 1 && CodexH != IntPtr.Zero) ? CodexH : DbH;
+        try { DD = RefreshDetail(ddb); DrawDetail(); }
         catch (Exception e) { ErrLog("detail", e.Message); }
     }
 
@@ -1692,11 +1815,24 @@ class TDN
                     g.FillRectangle(pb, 0, 0, w, h);
                 // 头部：日期 + 实时点 + 标签页
                 using (SolidBrush b = new SolidBrush(VermD))
-                    g.FillEllipse(b, w - (int)Math.Round(60 * s), (int)Math.Round(22 * s),
+                    g.FillEllipse(b, w - (int)Math.Round(58 * s), (int)Math.Round(52 * s),
                                   (int)Math.Round(7 * s), (int)Math.Round(7 * s));
                 using (SolidBrush b = new SolidBrush(MutedD))
                     g.DrawString(DateTime.Now.ToString("MM-dd") + " · 实时刷新", DFMeta, b,
-                                 w - (int)Math.Round(48 * s), (int)Math.Round(18 * s), typ);
+                                 w - (int)Math.Round(46 * s), (int)Math.Round(48 * s), typ);
+                // 工具切换（右对齐）：ZCode | Codex
+                string[] tools = new string[] { "ZCode", "Codex" };
+                int toolX = w - (int)Math.Round(150 * s);
+                for (int i = 0; i < 2; i++)
+                {
+                    bool on = i == DetailTool;
+                    using (SolidBrush b = new SolidBrush(on ? InkD : MutedD))
+                        g.DrawString(tools[i], DFMeta, b, toolX, (int)Math.Round(22 * s), typ);
+                    SizeF tw2 = g.MeasureString(tools[i], DFMeta, PointF.Empty, typ);
+                    ToolRects[i].X = toolX; ToolRects[i].Y = (int)Math.Round(14 * s);
+                    ToolRects[i].W = (int)Math.Round(tw2.Width); ToolRects[i].H = (int)Math.Round(20 * s);
+                    toolX += (int)Math.Round(tw2.Width) + (int)Math.Round(14 * s);
+                }
                 string[] tabs = new string[] { "总览", "速度", "总量" };
                 int tabX = (int)Math.Round(26 * s);
                 for (int i = 0; i < 3; i++)
@@ -1754,7 +1890,8 @@ class TDN
                         new string[] { "平均Token速度", "平均请求速度", "平均首字速度" },
                         new string[] { string.Format("{0:0.0} t/s", avg),
                                        string.Format("{0:0.0} 次/分", sm.Rpm),
-                                       (sm.Ttft > 0 ? string.Format("{0:0.0} s", sm.Ttft) : "-") },
+                                       (DetailTool == 1 ? "-" :
+                                        (sm.Ttft > 0 ? string.Format("{0:0.0} s", sm.Ttft) : "-")) },
                         new Color[] { SpdC(avg), InkD, InkD });
                     y = DrawSec(g, y, "每模型速度 · 今日（最近 8 条加权）");
                     if (DD.Dm.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
@@ -1873,13 +2010,25 @@ class TDN
             0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, wc.inst, IntPtr.Zero);
     }
 
+    static int PDown, PHit, PHitX, PHitY;
     static void DetailMouseDown(int px, int py)
     {
+        for (int i = 0; i < 2; i++)
+        {
+            if (px >= ToolRects[i].X && px <= ToolRects[i].X + ToolRects[i].W
+                && py >= ToolRects[i].Y && py <= ToolRects[i].Y + ToolRects[i].H)
+            {
+                if (DetailTool != i)
+                { DetailTool = i; DetailScroll = 0; LastDetailCalc = 0; DetailDataTick(); }
+                return;
+            }
+        }
         for (int i = 0; i < 3; i++)
         {
             if (px >= TabRects[i].X && px <= TabRects[i].X + TabRects[i].W
                 && py >= TabRects[i].Y && py <= TabRects[i].Y + TabRects[i].H)
             {
+                PHit++;
                 if (DetailPage != i) { DetailPage = i; DetailScroll = 0; DrawDetail(); }
                 return;
             }
@@ -1891,6 +2040,186 @@ class TDN
         DetailScroll -= delta / 120 * 60;
         if (DetailScroll < 0) DetailScroll = 0;
         try { DrawDetail(); } catch (Exception e) { ErrLog("detail", e.Message); }
+    }
+
+    // ================= Codex 双源（对照 _parse_rollout/codex_db 适配层） =================
+    static IntPtr CodexH;
+    static Dictionary<string, DateTime> CodexFiles;
+    static DateTime CodexScanAt = DateTime.MinValue;
+    static int DetailTool;   // 0=ZCode 1=Codex
+    static readonly RectI[] ToolRects = new RectI[] { new RectI(), new RectI() };
+
+    static long IsoMs(string t)
+    {
+        try
+        {
+            DateTime d = DateTime.Parse(t, System.Globalization.CultureInfo.InvariantCulture,
+                                        System.Globalization.DateTimeStyles.RoundtripKind);
+            if (d.Kind == DateTimeKind.Local) d = d.ToUniversalTime();
+            return (long)(d - new DateTime(1970, 1, 1)).TotalMilliseconds;
+        }
+        catch { return 0; }
+    }
+    static object JGet(Dictionary<string, object> d, string k)
+    {
+        object v; return d != null && d.TryGetValue(k, out v) ? v : null;
+    }
+    static Dictionary<string, object> JDict(object v)
+    { return v as Dictionary<string, object>; }
+
+    static void CodexInsert(string model, string sid, long start, long done,
+        long outTok, long inTok, long reasonTok, long cacheW, long cacheR, string src)
+    {
+        QueryH(CodexH, "INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "", sid, "codex", model, "completed", start, start, done,
+            Math.Max(0, done - start), outTok,
+            Math.Max(0, inTok - cacheR), reasonTok, cacheW, cacheR, src, "interactive");
+    }
+
+    static void ParseRollout(string path)
+    {
+        string sid = "", model = "";
+        long prevTs = 0; bool hasPrev = false;
+        Dictionary<string, long> prevTot = null;
+        List<object[]> rows = new List<object[]>();   // {kind, model, sid, start, ts, dlt}
+        foreach (string line in System.IO.File.ReadAllLines(path, Encoding.UTF8))
+        {
+            Dictionary<string, object> d;
+            try { d = JDict(new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(line)); }
+            catch { continue; }
+            if (d == null) continue;
+            string t = S(JGet(d, "type"));
+            Dictionary<string, object> pl = JDict(JGet(d, "payload"));
+            string tsS = S(JGet(d, "timestamp"));
+            long ts = tsS != null ? IsoMs(tsS) : 0;
+            if (t == "session_meta")
+            {
+                sid = S(JGet(pl, "id")) ?? "";
+                string cwd = (S(JGet(pl, "cwd")) ?? "").TrimEnd('/', '\\');
+                string title = cwd.Length > 0 ? System.IO.Path.GetFileName(cwd) : "";
+                if (title.Length == 0) title = sid.Length > 8 ? sid.Substring(0, 8) : "";
+                if (title.Length == 0) title = "?";
+                if (sid.Length > 0)
+                    QueryH(CodexH, "INSERT OR REPLACE INTO session (id, title) VALUES (?,?)", sid, title);
+            }
+            else if (t == "turn_context")
+            {
+                string m = S(JGet(pl, "model"));
+                if (m != null && m.Length > 0) model = m;
+                else if (model.Length == 0) model = "?";
+            }
+            else if (t == "compacted" && sid.Length > 0 && ts > 0)
+            {
+                rows.Add(new object[] { "c", "", sid, ts, ts, null });
+            }
+            else if (t == "event_msg" && pl != null && S(JGet(pl, "type")) == "token_count"
+                     && sid.Length > 0 && ts > 0)
+            {
+                Dictionary<string, object> info = JDict(JGet(pl, "info"));
+                Dictionary<string, object> totD = JDict(JGet(info, "total_token_usage"));
+                if (totD == null) { prevTs = ts; prevTot = prevTot ?? new Dictionary<string, long>(); continue; }
+                Dictionary<string, long> tot = new Dictionary<string, long>();
+                foreach (KeyValuePair<string, object> kv in totD)
+                    tot[kv.Key] = kv.Value == null ? 0 : Convert.ToInt64(kv.Value);
+                Dictionary<string, long> dlt = new Dictionary<string, long>();
+                bool any = false;
+                foreach (KeyValuePair<string, long> kv in tot)
+                {
+                    long b = 0;
+                    if (prevTot != null && prevTot.ContainsKey(kv.Key)) b = prevTot[kv.Key];
+                    long dv = kv.Value - b; if (dv < 0) dv = 0;
+                    dlt[kv.Key] = dv;
+                    if (dv > 0) any = true;
+                }
+                if (any)
+                {
+                    long start = hasPrev ? prevTs : ts;
+                    rows.Add(new object[] { "m", model, sid, start, ts, dlt });
+                }
+                prevTs = ts; hasPrev = true; prevTot = tot;
+            }
+        }
+        foreach (object[] r in rows)
+        {
+            if ((string)r[0] == "c")
+            {
+                long ts = (long)r[4];
+                QueryH(CodexH, "INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "", r[2], "codex", "", "completed", ts, ts, ts, 0, 0, 0, 0, 0, 0,
+                    "compact", "interactive");
+            }
+            else
+            {
+                Dictionary<string, long> dlt = (Dictionary<string, long>)r[5];
+                long start = (long)r[3], ts = (long)r[4];
+                CodexInsert((string)r[1], (string)r[2], start, ts,
+                    Dg(dlt, "output_tokens"),
+                    Dg(dlt, "input_tokens"),
+                    Dg(dlt, "reasoning_output_tokens"),
+                    Dg(dlt, "cache_write_input_tokens"),
+                    Dg(dlt, "cached_input_tokens"), "main_turn");
+            }
+        }
+    }
+    static long Dg(Dictionary<string, long> d, string k)
+    {
+        long v; return d.TryGetValue(k, out v) ? v : 0;
+    }
+
+    // 近 8 天 rollout -> 内存库；3s 扫描节流 + mtime 集合不变复用（对照 codex_db）
+    static void CodexDb()
+    {
+        DateTime now = DateTime.Now;
+        if (CodexH != IntPtr.Zero && (now - CodexScanAt).TotalSeconds < 3.0) return;
+        CodexScanAt = now;
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string dir = home + "\\.codex\\sessions";
+        Dictionary<string, DateTime> files = new Dictionary<string, DateTime>();
+        if (System.IO.Directory.Exists(dir))
+        {
+            DateTime cutoff = now - TimeSpan.FromDays(8);
+            string[] all;
+            try { all = System.IO.Directory.GetFiles(dir, "*.jsonl", System.IO.SearchOption.AllDirectories); }
+            catch { all = new string[0]; }
+            foreach (string f in all)
+            {
+                try
+                {
+                    DateTime m = System.IO.File.GetLastWriteTime(f);
+                    if (m >= cutoff) files[f] = m;
+                }
+                catch { }
+            }
+        }
+        if (CodexH != IntPtr.Zero && CodexFiles != null && files.Count == CodexFiles.Count)
+        {
+            bool same = true;
+            foreach (KeyValuePair<string, DateTime> kv in files)
+            {
+                DateTime old;
+                if (!CodexFiles.TryGetValue(kv.Key, out old) || old != kv.Value) { same = false; break; }
+            }
+            if (same) return;   // 文件集合与 mtime 全等 → 复用
+        }
+        CodexFiles = files;
+        if (CodexH != IntPtr.Zero) { sqlite3_close(CodexH); CodexH = IntPtr.Zero; }
+        int rc = sqlite3_open_v2(Utf8z(":memory:"), out CodexH, 2 | 4, IntPtr.Zero);   // READWRITE|CREATE
+        if (rc != 0) { CodexH = IntPtr.Zero; return; }
+        QueryH(CodexH, "CREATE TABLE model_usage (id TEXT, session_id TEXT, provider_id TEXT,"
+            + " model_id TEXT, status TEXT, started_at INTEGER, first_token_at INTEGER,"
+            + " completed_at INTEGER, duration_ms INTEGER, output_tokens INTEGER,"
+            + " input_tokens INTEGER, reasoning_tokens INTEGER,"
+            + " cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            + " query_source TEXT, task_type TEXT DEFAULT 'interactive')");
+        QueryH(CodexH, "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_archived INTEGER)");
+        ProvNames["codex"] = "Codex";
+        List<string> paths = new List<string>(files.Keys);
+        paths.Sort();
+        foreach (string f in paths)
+        {
+            try { ParseRollout(f); }
+            catch (Exception e) { ErrLog("codex-parse", e.Message); }
+        }
     }
 
     static void Main()

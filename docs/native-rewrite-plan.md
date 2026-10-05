@@ -42,9 +42,9 @@
 - [x] 简略面板（P2：托盘开关/1Hz/90s 门控/running 合并/把手拖拽/三态 alpha）
 - [x] 详情三页（P3：标签页/滚动/全套口径移植）
 - [x] 换装 dist + 桌面/Startup 快捷方式指向 native（P5，2026-10-05）
-- [ ] codex 双源（二期）
-- [ ] part 字符估算 _est_map（二期：无回报模型的估算行）
-- [ ] UIA 事件驱动（P4，性能优化，待用户验收 P1-P3 后做）
+- [x] codex 双源（二期，2026-10-05：~/.codex/sessions 扫描→内存库→详情工具切换+面板双源同显，真实 rollout 实测通过）
+- [x] part 字符估算 _est_map（二期，2026-10-05：无回报模型窗口≥3 完成行×0.6 字符估算，接入 SessionSpeed/EffTok；⚠️ 本机无无回报模型可触发，代码路径未实测）
+- [x] P4 降本：自适应轮询（2026-10-05 落地）——原案"UIA PropertyChanged 事件订阅"本机不可行：GAC UIAutomationClient 无该 API（CS1061 实锤），改为 DB/UI 活跃 15s 内 300ms、空闲 1000ms 自适应间隔，fast 168→52-91/min
 
 ## 阶段
 P1 核心骨架（SQLite+统计+overlay+托盘+互斥+UIA 内联）→ 对照旧版实拍
@@ -54,6 +54,13 @@ P4 UIA 事件驱动
 P5 换装 dist（旧 exe 留 .bak）+ 系统级实测（进程数/内存/CPU）
 
 ## 进度日志
+- 2026-10-05 14:1x P4 + 二期（est/codex）完成（自适应轮询/字符估算/codex 双源+详情工具切换）：
+  - P4 实际形态：事件订阅 API 在本机 GAC UIAutomationClient 中不存在（最小编译 CS1061 实锤），按兜底方案落地自适应轮询——BindTick 跟踪 LastDbChgTc（mu/pr/title/model 任一变化），UiaTick 按活跃 15s 内 300ms / 空闲 1000ms 调速。fast 168→91/min（流式）/52/min（空闲），walks 维持 17-19/60s。
+  - est 字符估算：EstMap/EffTok 移植（TOK_PER_CHAR=0.6、窗口≥3 完成行且回报<20 tok 触发、part 字符 IN 分批 400）。⚠️ 本机 GLM/Kilo 模型全部正常回报，无触发样本，代码路径未实测。
+  - codex 双源：CodexDb() 扫 ~/.codex/sessions/**/*.jsonl（8 天 mtime 窗、3s 节流、集合不变复用）→ ParseRollout（session_meta/turn_context 顶层 type、token_count= event_msg/payload.type、total_token_usage 累计差分、compacted→compact 行、input 去缓存）→ 内存 sqlite（第二连接 CodexH，QueryH 句柄化）→ 详情头部 ZCode|Codex 工具标签切换 + 面板双源合并同显。
+  - 实测（真实数据 77 文件 / 6340 差分行 + 今日合成 rollout 验证后删除）：①工具标签点击切换（Codex 点亮、三页数据源切换）；②总量页 gpt-5.6-verify 100% 条、会话 codex_verify（cwd 尾段标题）、压缩 1 次带本地时间；③数字与参考公式精确吻合：642=2442−2000×0.9、输入 400=200+2000×0.1、输出 242=(110+11)×2；④面板双源同显：GLM-5.3-Flash (ACCOUNT) 28.5 t/s + gpt-5.6-verify (CODEX) 0.5 t/s=121tok/240s；⑤时区正确（UTC rollout → 本地 14:05）。测试痕迹已清理（合成文件删除、touch 的 mtime 恢复）。
+  - 视觉遗留全部闭环：屏幕抓取在日间可用，P2/P3 时待验的像素级视觉（面板配色/详情三页/中文渲染/真实数据行）已全部截图验收（见 changes 当日文档）。
+  - 内存：测试突发后 57MB 私有（19 分钟、含 codex 多轮重建+880×1320 大位图渲染），长跑趋势继续观察 ⚠️；真实重启自启 ⚠️ 待下次重启观察。
 - 2026-10-05 04:0x P2/P3/P5 完成（提交 70a7005、718c3e2）：
   - P2 简略面板：托盘菜单三项（简略面板勾选开关/详情/退出）、GDI 渲染对照 HTML 样式、BLENDF 整窗 alpha 三态、把手拖拽穿透、1Hz 取数 sig 重绘。功能链路验证通过（WM_COMMAND 切换、250x74 单行运行中模型、高度公式吻合）。
   - P3 详情三页：440x660 分层窗口、自绘标签页+滚轮+SetClip 滚动、数据全套移植（today_summary/session_stats/dmodels/bm/tsess/cp/days）。打开/切换/滚动/1Hz 刷新验证通过。
