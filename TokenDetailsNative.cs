@@ -686,6 +686,8 @@ class TDN
     [DllImport("user32.dll")] static extern int GetWindowLongW(IntPtr h, int idx);
     [DllImport("user32.dll")] static extern int SetWindowLongW(IntPtr h, int idx, int val);
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int k);
+    const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOACTIVATE = 0x0010, SWP_SHOWWINDOW = 0x0040;
+    static readonly IntPtr HWND_TOP = IntPtr.Zero;
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint fl);
     [DllImport("user32.dll")] static extern bool DestroyMenu(IntPtr m);
     [DllImport("user32.dll")] static extern bool SystemParametersInfoW(uint act, uint prm, ref RECT rc, uint ini);
@@ -697,6 +699,7 @@ class TDN
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
     [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern bool Shell_NotifyIconW(uint msg, ref NID d);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr LoadImage(IntPtr hInst, string name, uint type, int cx, int cy, uint fuLoad);
     public delegate bool EnumCb(IntPtr h, IntPtr l);
 
     const uint WS_POPUP = 0x80000000;
@@ -726,10 +729,16 @@ class TDN
         if (m == WM_COMMAND && cmd == 3) { ToggleDetail(); return IntPtr.Zero; }
         if (h == DetailHwnd)
         {
-            if (m == 0x0201)   // WM_LBUTTONDOWN：标签页切换
+            if (m == 0x0201)   // WM_LBUTTONDOWN：关闭按钮/标签页切换
             {
                 int px = (short)(l.ToInt64() & 0xffff), py = (short)((l.ToInt64() >> 16) & 0xffff);
                 PDown++; PHitX = px; PHitY = py;
+                if (px >= CloseRect.X && px <= CloseRect.X + CloseRect.W
+                    && py >= CloseRect.Y && py <= CloseRect.Y + CloseRect.H)
+                {
+                    ShowWindow(DetailHwnd, SW_HIDE); DetailVisible = false;
+                    return IntPtr.Zero;
+                }
                 DetailMouseDown(px, py);
                 return IntPtr.Zero;
             }
@@ -750,10 +759,10 @@ class TDN
     {
         if (MenuHandle != IntPtr.Zero) DestroyMenu(MenuHandle);
         MenuHandle = CreatePopupMenu();
-        AppendMenuW(MenuHandle, PanelVisible ? 8u : 0u, (IntPtr)2, "简略面板");   // MF_CHECKED
-        AppendMenuW(MenuHandle, DetailVisible ? 8u : 0u, (IntPtr)3, "详情");
+        AppendMenuW(MenuHandle, PanelVisible ? 8u : 0u, (IntPtr)2, "简约面板");   // MF_CHECKED
+        AppendMenuW(MenuHandle, DetailVisible ? 8u : 0u, (IntPtr)3, "详情面板");
         AppendMenuW(MenuHandle, 0x800u, IntPtr.Zero, "");
-        AppendMenuW(MenuHandle, 0, (IntPtr)1, "退出");
+        AppendMenuW(MenuHandle, 0, (IntPtr)1, "退出程序");
         POINT p = default(POINT); GetCursorPos(ref p);
         SetForegroundWindow(OverlayHwnd);
         TrackPopupMenu(MenuHandle, 0x22 /*RIGHTBUTTON|BOTTOMALIGN*/, p.x, p.y, 0, OverlayHwnd, 0);
@@ -941,6 +950,18 @@ class TDN
 
     static IntPtr MakeIcon()
     {
+        // 优先用 exe 同目录的 token_speed.ico（与桌面/Startup 快捷方式同源）
+        try
+        {
+            string dir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            string ico = System.IO.Path.Combine(dir, "token_speed.ico");
+            if (System.IO.File.Exists(ico))
+            {
+                IntPtr h = LoadImage(IntPtr.Zero, ico, 1 /*IMAGE_ICON*/, 16, 16, 0x10 /*LR_LOADFROMFILE*/);
+                if (h != IntPtr.Zero) return h;
+            }
+        }
+        catch { }
         using (Bitmap b = new Bitmap(16, 16))
         {
             using (Graphics g = Graphics.FromImage(b))
@@ -1432,6 +1453,7 @@ class TDN
     static Font DFBase, DFSec, DFName, DFMeta, DFVal, DFCardV, DFCardK, DFTab, DFChart;
     static uint DetailFontDpi;
     static readonly RectI[] TabRects = new RectI[] { new RectI(), new RectI(), new RectI() };
+    static readonly RectI CloseRect = new RectI();
 
     static readonly Color InkD = Color.FromArgb(255, 0x1A, 0x1D, 0x22);
     static readonly Color MutedD = Color.FromArgb(255, 0x9A, 0x97, 0x8C);
@@ -1701,6 +1723,8 @@ class TDN
                 DetailX = wa.r - 470; DetailY = wa.t + 40;
             }
             ShowWindow(DetailHwnd, SW_SHOWNOACTIVATE);
+            SetWindowPos(DetailHwnd, HWND_TOP, DetailX, DetailY, 0, 0,
+                         SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             LastDetailCalc = 0;
             DetailDataTick();
         }
@@ -1735,28 +1759,52 @@ class TDN
     }
 
     // 一行：名称 + 右侧 meta 串 + 值 + 条
+    static string FitText(Graphics g, string text, Font font, float maxWidth, StringFormat fmt)
+    {
+        if (text == null || text.Length == 0 || maxWidth <= 0) return "";
+        if (g.MeasureString(text, font, PointF.Empty, fmt).Width <= maxWidth) return text;
+        const string ell = "\u2026";
+        if (g.MeasureString(ell, font, PointF.Empty, fmt).Width > maxWidth) return "";
+        int lo = 0, hi = text.Length;
+        while (lo < hi)
+        {
+            int mid = (lo + hi + 1) / 2;
+            string probe = text.Substring(0, mid) + ell;
+            if (g.MeasureString(probe, font, PointF.Empty, fmt).Width <= maxWidth) lo = mid;
+            else hi = mid - 1;
+        }
+        return text.Substring(0, lo) + ell;
+    }
+
     static int DrawRow(Graphics g, int y, int w, int pad, string name, string meta,
                        string val, Color vc, int barPct, Color barC)
     {
         double s = DetailScale;
-        int x0 = (int)Math.Round(pad * s), rx = w - (int)Math.Round(26 * s);
+        float x0 = (float)Math.Round(pad * s);
+        float rx = w - (float)Math.Round(26 * s);
+        float gap = (float)Math.Round(10 * s);
+        StringFormat fmt = StringFormat.GenericTypographic;
+        string value = val ?? "";
+        SizeF rawValue = g.MeasureString(value, DFVal, PointF.Empty, fmt);
+        float valueX = rx - rawValue.Width;
+        float metaRight = valueX - gap;
+        float metaMax = Math.Min((float)Math.Round(198 * s), (rx - x0) * 0.46f);
+        string metaDraw = FitText(g, meta ?? "", DFMeta, metaMax, fmt);
+        SizeF metaSize = g.MeasureString(metaDraw, DFMeta, PointF.Empty, fmt);
+        float metaX = metaRight - metaSize.Width;
+        float nameMax = Math.Max(0, metaX - gap - x0);
+        string nameDraw = FitText(g, name ?? "", DFName, nameMax, fmt);
         using (SolidBrush b = new SolidBrush(InkD))
-            g.DrawString(name, DFName, b, x0, y, StringFormat.GenericTypographic);
-        SizeF vw = g.MeasureString(val, DFVal, PointF.Empty, StringFormat.GenericTypographic);
-        float vx = rx - vw.Width;
+            g.DrawString(nameDraw, DFName, b, x0, y, fmt);
         using (SolidBrush b = new SolidBrush(vc))
-            g.DrawString(val, DFVal, b, vx, y - 2 * (float)s, StringFormat.GenericTypographic);
-        if (meta != null && meta.Length > 0)
-        {
-            SizeF mw = g.MeasureString(meta, DFMeta, PointF.Empty, StringFormat.GenericTypographic);
+            g.DrawString(value, DFVal, b, valueX, y - 2 * (float)s, fmt);
+        if (metaDraw.Length > 0)
             using (SolidBrush b = new SolidBrush(MutedD))
-                g.DrawString(meta, DFMeta, b, vx - 14 * (float)s - mw.Width, y + 5 * (float)s,
-                             StringFormat.GenericTypographic);
-        }
+                g.DrawString(metaDraw, DFMeta, b, metaX, y + 5 * (float)s, fmt);
         int barY = y + (int)Math.Round(24 * s);
         using (SolidBrush b = new SolidBrush(HairD))
             g.FillRectangle(b, x0, barY, rx - x0, 2);
-        int fill = Math.Max(0, Math.Min(100, barPct)) * (rx - x0) / 100;
+        int fill = Math.Max(0, Math.Min(100, barPct)) * ((int)rx - (int)x0) / 100;
         if (fill > 0)
             using (SolidBrush b = new SolidBrush(barC))
                 g.FillRectangle(b, x0, barY, fill, 2);
@@ -1779,19 +1827,36 @@ class TDN
     static int DrawCards(Graphics g, int y, int w, string[] keys, string[] vals, Color[] vc)
     {
         double s = DetailScale;
-        int colW = (w - (int)Math.Round(40 * s)) / 3;
+        int colW = (w - (int)Math.Round(92 * s)) / 3;
         int x = (int)Math.Round(28 * s);
+        StringFormat fmt = StringFormat.GenericTypographic;
         for (int i = 0; i < keys.Length; i++)
         {
             if (i > 0)
                 using (SolidBrush b = new SolidBrush(LineD))
                     g.FillRectangle(b, x - (int)Math.Round(9 * s), y, 1, (int)Math.Round(40 * s));
+            float maxW = colW - (float)Math.Round(8 * s);
+            string key = FitText(g, keys[i], DFCardK, maxW, fmt);
             using (SolidBrush b = new SolidBrush(MutedD))
-                g.DrawString(keys[i].ToUpperInvariant(), DFCardK, b, x, y,
-                             StringFormat.GenericTypographic);
+                g.DrawString(key, DFCardK, b, x, y, fmt);
+            string value = vals[i] == null ? "" : vals[i];
+            Font valueFont = DFCardV;
+            Font compactFont = null;
+            float size = DFCardV.Size;
+            SizeF valueSize = g.MeasureString(value, valueFont, PointF.Empty, fmt);
+            float minSize = (float)Math.Round(13 * s);
+            while (valueSize.Width > maxW && size > minSize)
+            {
+                size -= 1;
+                if (compactFont != null) compactFont.Dispose();
+                compactFont = new Font(DFCardV.FontFamily, size, DFCardV.Style, GraphicsUnit.Pixel);
+                valueFont = compactFont;
+                valueSize = g.MeasureString(value, valueFont, PointF.Empty, fmt);
+            }
+            string valueDraw = FitText(g, value, valueFont, maxW, fmt);
             using (SolidBrush b = new SolidBrush(i < vc.Length ? vc[i] : InkD))
-                g.DrawString(vals[i], DFCardV, b, x, y + (int)Math.Round(14 * s),
-                             StringFormat.GenericTypographic);
+                g.DrawString(valueDraw, valueFont, b, x, y + (int)Math.Round(14 * s), fmt);
+            if (compactFont != null) compactFont.Dispose();
             x += colW + (int)Math.Round(18 * s);
         }
         return y + (int)Math.Round(58 * s);
@@ -1813,13 +1878,18 @@ class TDN
                 StringFormat typ = StringFormat.GenericTypographic;
                 using (SolidBrush pb = new SolidBrush(PaperD))
                     g.FillRectangle(pb, 0, 0, w, h);
-                // 头部：日期 + 实时点 + 标签页
+                // 头部日期只占首行右侧，避免侵入第一张数据卡
                 using (SolidBrush b = new SolidBrush(VermD))
-                    g.FillEllipse(b, w - (int)Math.Round(58 * s), (int)Math.Round(52 * s),
+                    g.FillEllipse(b, w - (int)Math.Round(58 * s), (int)Math.Round(18 * s),
                                   (int)Math.Round(7 * s), (int)Math.Round(7 * s));
                 using (SolidBrush b = new SolidBrush(MutedD))
-                    g.DrawString(DateTime.Now.ToString("MM-dd") + " · 实时刷新", DFMeta, b,
-                                 w - (int)Math.Round(46 * s), (int)Math.Round(48 * s), typ);
+                {
+                    string stamp = DateTime.Now.ToString("MM-dd");
+                    SizeF stampSize = g.MeasureString(stamp, DFMeta, PointF.Empty, typ);
+                    g.DrawString(stamp, DFMeta, b,
+                                 w - (float)Math.Round(46 * s) - stampSize.Width,
+                                 (float)Math.Round(12 * s), typ);
+                }
                 // 工具切换（右对齐）：ZCode | Codex
                 string[] tools = new string[] { "ZCode", "Codex" };
                 int toolX = w - (int)Math.Round(150 * s);
@@ -1844,6 +1914,21 @@ class TDN
                     TabRects[i].X = tabX; TabRects[i].Y = (int)Math.Round(8 * s);
                     TabRects[i].W = (int)Math.Round(tw.Width); TabRects[i].H = (int)Math.Round(28 * s);
                     tabX += (int)Math.Round(tw.Width) + (int)Math.Round(18 * s);
+                }
+                // 关闭按钮：右上角固定命中区，详情只隐藏不销毁
+                CloseRect.X = w - (int)Math.Round(34 * s);
+                CloseRect.Y = (int)Math.Round(7 * s);
+                CloseRect.W = (int)Math.Round(26 * s);
+                CloseRect.H = (int)Math.Round(30 * s);
+                using (SolidBrush b = new SolidBrush(MutedD))
+                using (Pen p = new Pen(MutedD, (float)Math.Max(1.5, 1.5 * s)))
+                {
+                    float cx = CloseRect.X + CloseRect.W / 2f;
+                    float cy = CloseRect.Y + CloseRect.H / 2f;
+                    g.DrawLine(p, cx - 5 * (float)s, cy - 5 * (float)s,
+                                  cx + 5 * (float)s, cy + 5 * (float)s);
+                    g.DrawLine(p, cx + 5 * (float)s, cy - 5 * (float)s,
+                                  cx - 5 * (float)s, cy + 5 * (float)s);
                 }
                 using (SolidBrush b = new SolidBrush(LineD))
                     g.FillRectangle(b, 0, (int)Math.Round(44 * s), w, 1);
@@ -2005,7 +2090,7 @@ class TDN
         wc.inst = Marshal.GetHINSTANCE(typeof(TDN).Module);
         wc.name = "TokenDetailsDetail";
         RegisterClassW(ref wc);
-        uint ex = (uint)(0x80000 | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST);   // 0x80000=WS_EX_LAYERED
+        uint ex = (uint)(0x80000 | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);   // 0x80000=WS_EX_LAYERED；详情不强制置顶
         DetailHwnd = CreateWindowExW(ex, "TokenDetailsDetail", "Token Details 详情", WS_POPUP,
             0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, wc.inst, IntPtr.Zero);
     }
