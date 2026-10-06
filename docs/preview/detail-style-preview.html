@@ -130,35 +130,41 @@
     background: var(--header-bg, var(--win-bg)); user-select: none; position: relative;
   }
   .header-row { min-height: 44px; display: flex; align-items: center; }
-  .page-tabs { display: flex; align-items: center; gap: var(--tab-gap, 2px); padding: 8px 14px 3px; }
+  .page-tabs { display: flex; align-items: center; gap: var(--tab-gap, 2px); padding: 8px 4px 3px 10px; flex: 0 0 auto; }
   .page-tab {
-    min-height: 38px; padding: 8px 12px; border: 0; background: transparent;
+    min-height: 38px; padding: 8px 7px; border: 0; background: transparent;
     color: var(--win-muted); font-weight: var(--tab-weight, 500); font-size: 14px;
     border-radius: var(--control-radius, 6px);
     font-family: var(--font-tab, inherit); letter-spacing: var(--tab-track, .04em);
+    white-space: nowrap; flex: 0 0 auto;
     transition: background-color .18s, color .18s, box-shadow .18s;
   }
   .page-tab:hover { color: var(--win-ink); background: var(--hover-bg); }
   .page-tab[aria-selected="true"] { color: var(--sel-ink, var(--win-ink)); background: var(--selected-bg); box-shadow: var(--sel-shadow, none); }
-  .header-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; padding: 0 10px; }
-  .date { color: var(--date-color, var(--win-muted)); font: var(--date-font, 12px/1 "Segoe UI", sans-serif); letter-spacing: .12em; }
+  .header-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; padding: 0 6px; flex: 0 0 auto; }
+  .date { color: var(--date-color, var(--win-muted)); font: var(--date-font, 11px/1 "Segoe UI", sans-serif); letter-spacing: .08em; white-space: nowrap; }
   .close-btn {
-    width: 44px; height: 38px; border: 0; background: transparent; color: var(--win-muted);
+    width: 40px; height: 38px; border: 0; background: transparent; color: var(--win-muted);
     border-radius: var(--control-radius, 6px); font-size: 20px; line-height: 1;
     transition: background-color .18s, color .18s;
   }
   .close-btn:hover { color: var(--close-ink, var(--win-ink)); background: var(--close-bg, var(--hover-bg)); }
-  .source-tabs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; padding: 4px 14px 11px; }
-  .source-tab {
-    min-height: 44px; padding: 7px 8px; border: var(--src-border, 1px solid transparent);
-    background: var(--src-bg, transparent);
-    color: var(--win-muted); font-size: 12px; letter-spacing: .12em;
-    border-radius: var(--control-radius, 6px);
-    font-family: var(--font-tab, inherit);
-    transition: background-color .18s, color .18s, border-color .18s;
+  .source-tabs {
+    display: flex; gap: 2px; padding: 3px;
+    background: var(--src-track, var(--hover-bg));
+    border: 1px solid var(--src-track-border, var(--win-line));
+    border-radius: 999px;
   }
-  .source-tab:hover { color: var(--win-ink); background: var(--hover-bg); }
-  .source-tab[aria-selected="true"] { background: var(--selected-bg); color: var(--sel-ink, var(--win-ink)); border-color: var(--src-border-active, transparent); font-weight: 600; }
+  .source-tab {
+    min-height: 26px; padding: 3px 8px;
+    border: 0; background: transparent;
+    color: var(--win-muted); font-size: 11px; letter-spacing: .04em;
+    border-radius: 999px; white-space: nowrap;
+    font-family: var(--font-tab, inherit);
+    transition: background-color .18s, color .18s;
+  }
+  .source-tab:hover { color: var(--win-ink); }
+  .source-tab[aria-selected="true"] { background: var(--sel-src-bg, var(--selected-bg)); color: var(--sel-src-ink, var(--sel-ink, var(--win-ink))); font-weight: 600; }
 
   .window-content {
     min-height: 0; flex: 1; overflow: auto; padding: var(--content-pad, 16px 15px 26px);
@@ -310,8 +316,8 @@
     --zcode: #8fb4d9; --codex: #e8c46a;
   }
   .theme-onyx .page-tab[aria-selected="true"] { background: transparent; box-shadow: inset 0 -2px #e8c46a; }
-  .theme-onyx .source-tab { border-color: rgba(224,184,75,.3); }
-  .theme-onyx .source-tab[aria-selected="true"] { background: rgba(224,184,75,.14); color: #ecc873; border-color: rgba(224,184,75,.5); }
+  .theme-onyx .source-tabs { background: rgba(224,184,75,.07); border-color: rgba(224,184,75,.3); }
+  .theme-onyx .source-tab[aria-selected="true"] { background: rgba(224,184,75,.9); color: #17130d; }
   .theme-onyx .kpi { border: 0; padding: 13px 14px 14px; background: rgba(224,184,75,.05); border-radius: 6px; }
   .theme-onyx .kpi-grid { gap: 9px; border-bottom-color: rgba(224,184,75,.18); }
   .theme-onyx .kpi + .kpi { border-left: 0; }
@@ -353,12 +359,13 @@
     --zcode: #3f5f86; --codex: #b98a2e;
     --sel-shadow: none;
   }
-  .theme-ivory .page-tab { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; min-height: 44px; }
-  .theme-ivory .page-tab::before { content: counter(pg, decimal-leading-zero) " "; color: #b98a2e; font-size: 11px; }
+  .theme-ivory .page-tab { font-size: 12px; letter-spacing: .03em; text-transform: uppercase; min-height: 44px; }
+  .theme-ivory .page-tab::before { content: counter(pg, decimal-leading-zero) " "; color: #b98a2e; font-size: 9px; }
   .theme-ivory .page-tabs { counter-reset: pg; }
   .theme-ivory .page-tab { counter-increment: pg; }
-  .theme-ivory .source-tab { text-transform: uppercase; letter-spacing: .2em; font-size: 10px; border: 1px solid #d5cfc2; }
-  .theme-ivory .source-tab[aria-selected="true"] { background: #1c1917; color: #fbfaf6; border-color: #1c1917; }
+  .theme-ivory .source-tab { font-size: 10px; letter-spacing: .04em; }
+  .theme-ivory .source-tabs { background: #efece3; border-color: #d5cfc2; }
+  .theme-ivory .source-tab[aria-selected="true"] { background: #1c1917; color: #fbfaf6; }
   .theme-ivory .kpi-grid { border-bottom: 1px solid #1c1917; }
   .theme-ivory .data-row:first-child { border-top: 1px solid #1c1917; }
   .theme-ivory .section-title span { color: #1c1917; }
@@ -404,8 +411,8 @@
     border-radius: 999px; box-shadow: none;
   }
   .theme-titan .page-tab[aria-selected="true"]:hover { background: #2563a0; color: #ffffff; }
-  .theme-titan .source-tab { border-color: rgba(37,99,160,.3); }
-  .theme-titan .source-tab[aria-selected="true"] { background: rgba(37,99,160,.1); color: #1f5fa8; border-color: rgba(37,99,160,.5); }
+  .theme-titan .source-tabs { background: #eef2f7; border-color: rgba(37,99,160,.3); }
+  .theme-titan .source-tab[aria-selected="true"] { background: #2563a0; color: #ffffff; }
   .theme-titan .data-row { border-left: 2px solid transparent; padding-left: 8px; }
   .theme-titan .data-row:hover { border-left-color: #2563a0; }
   .theme-titan .bar.peak { background: #b8791d; }
@@ -448,8 +455,8 @@
   .theme-porcelain .window-header { border-bottom: 0; border-top: 1px solid #e5e6e1; }
   .theme-porcelain .page-tab { font-weight: 600; font-size: 13px; letter-spacing: .06em; }
   .theme-porcelain .page-tab[aria-selected="true"] { box-shadow: inset 0 -2px #155f47; background: transparent; color: #155f47; }
-  .theme-porcelain .source-tab { border-color: #dfe2dd; }
-  .theme-porcelain .source-tab[aria-selected="true"] { background: #155f47; color: #fff; border-color: #155f47; }
+  .theme-porcelain .source-tabs { background: #edf0ee; border-color: #dfe2dd; }
+  .theme-porcelain .source-tab[aria-selected="true"] { background: #155f47; color: #fff; }
   .theme-porcelain .section-title span { color: #26282c; }
   .theme-porcelain .bar.peak { background: #155f47; }
 
@@ -498,6 +505,7 @@
     .canvas { min-height: auto; padding: 8px; }
     .detail-window { height: 700px; }
     .theme-list { grid-template-columns: 1fr; }
+    .date { display: none; }
     .data-row { grid-template-columns: minmax(0, 1.15fr) minmax(0, .9fr) auto; gap: 5px; }
     .row-meta { font-size: 9px; }
     .kpi { padding: 0 6px; }
@@ -572,11 +580,14 @@
                   <button class="page-tab" data-page="speed" role="tab" aria-selected="false">速度</button>
                   <button class="page-tab" data-page="total" role="tab" aria-selected="false">总量</button>
                 </nav>
-                <div class="header-tools"><span class="date">10-06</span><button class="close-btn" id="closePreview" aria-label="关闭详情预览" title="关闭详情预览">×</button></div>
-              </div>
-              <div class="source-tabs" role="tablist" aria-label="数据来源">
-                <button class="source-tab" data-source="zcode" role="tab" aria-selected="true">ZCode</button>
-                <button class="source-tab" data-source="codex" role="tab" aria-selected="false">Codex</button>
+                <div class="header-tools">
+                  <div class="source-tabs" role="tablist" aria-label="数据来源">
+                    <button class="source-tab" data-source="zcode" role="tab" aria-selected="true">ZCode</button>
+                    <button class="source-tab" data-source="codex" role="tab" aria-selected="false">Codex</button>
+                  </div>
+                  <span class="date">10-06</span>
+                  <button class="close-btn" id="closePreview" aria-label="关闭详情预览" title="关闭详情预览">×</button>
+                </div>
               </div>
             </header>
             <div class="window-content" id="content" tabindex="0"></div>
