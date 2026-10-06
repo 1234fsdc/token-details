@@ -399,7 +399,11 @@
     --zcode: #2563a0; --codex: #b8791d;
   }
   .theme-titan .page-tab { text-transform: uppercase; font-size: 12px; }
-  .theme-titan .page-tab[aria-selected="true"] { box-shadow: inset 0 -2px #2563a0; background: transparent; }
+  .theme-titan .page-tab[aria-selected="true"] {
+    background: #2563a0; color: #ffffff; font-weight: 600;
+    border-radius: 999px; box-shadow: none;
+  }
+  .theme-titan .page-tab[aria-selected="true"]:hover { background: #2563a0; color: #ffffff; }
   .theme-titan .source-tab { border-color: rgba(37,99,160,.3); }
   .theme-titan .source-tab[aria-selected="true"] { background: rgba(37,99,160,.1); color: #1f5fa8; border-color: rgba(37,99,160,.5); }
   .theme-titan .data-row { border-left: 2px solid transparent; padding-left: 8px; }
