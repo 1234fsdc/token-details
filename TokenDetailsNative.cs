@@ -339,6 +339,31 @@ class TDN
         return r.Length > 0 ? L(r[0][0]) : 0;
     }
 
+    // 当前会话/模型是否还有未结束的 assistant 请求。model_usage 只在请求结束时落库，
+    // 因此运行中的回合不能参与速度计算，但有历史速度时不应被 90s 门控清成 0。
+    static bool SessionHasRunningRequest(string sid, string modelId)
+    {
+        if (String.IsNullOrEmpty(sid) || DbH == IntPtr.Zero) return false;
+        long cutoff = UnixMs() - 30 * 60 * 1000L;
+        string q = "SELECT 1 FROM message m WHERE m.session_id=? "
+            + "AND json_extract(m.data,'$.role')='assistant' "
+            + "AND m.time_created>=? "
+            + "AND (json_extract(m.data,'$.finish') IS NULL "
+            + "OR json_extract(m.data,'$.finish')='started') "
+            + "AND NOT EXISTS (SELECT 1 FROM model_usage u "
+            + "WHERE u.id LIKE '%' || m.id || '%') ";
+        object[] args;
+        if (!String.IsNullOrEmpty(modelId))
+        {
+            q += "AND COALESCE(json_extract(m.data,'$.modelId'), "
+                + "json_extract(m.data,'$.modelID'))=? ";
+            args = new object[] { sid, cutoff, modelId };
+        }
+        else args = new object[] { sid, cutoff };
+        q += "LIMIT 1";
+        return Query(q, args).Length > 0;
+    }
+
     // ================= UIA（对照 token_watcher.cs 逻辑） =================
     static AutomationElement UiaRoot, TitleEl, ModelEl, AnchorEl;
     static long Hwnd0;
@@ -544,9 +569,18 @@ class TDN
                 else
                 {
                     double now = NowS();
-                    if (LastTitle.Length > 0 && TitleEmptySince > 0
-                        && now - TitleEmptySince <= 4.0) t = LastTitle;
-                    else { if (TitleEmptySince == 0) TitleEmptySince = now; t = ""; }
+                    if (LastTitle.Length > 0)
+                    {
+                        // Python resolve_title：首次空读也沿用健康标题，4s 后才接受空。
+                        if (TitleEmptySince == 0) TitleEmptySince = now;
+                        if (now - TitleEmptySince <= 4.0) t = LastTitle;
+                        else t = "";
+                    }
+                    else
+                    {
+                        if (TitleEmptySince == 0) TitleEmptySince = now;
+                        t = "";
+                    }
                 }
                 title = t;
                 model = CurModel.Length > 0 ? CurModel : LastModel;
@@ -594,9 +628,19 @@ class TDN
                     long act = SessionLastAct(sid);
                     if (act < nowMs - 90 * 1000)
                     {
-                        reason = string.Format("90s空闲归零 sid={0} 最近完成{1}s前 part活动{2}s前",
-                            sid, (nowMs - lastDone) / 1000, (nowMs - act) / 1000);
-                        models = new ModelAgg[0];
+                        bool running = false;
+                        // models 中保存的是数据库完整 model_id；不要用 UIA 的短展示名匹配。
+                        for (int i = 0; i < models.Length; i++)
+                        {
+                            if (SessionHasRunningRequest(sid, models[i].Model))
+                            { running = true; break; }
+                        }
+                        if (!running)
+                        {
+                            reason = string.Format("90s空闲归零 sid={0} 最近完成{1}s前 part活动{2}s前",
+                                sid, (nowMs - lastDone) / 1000, (nowMs - act) / 1000);
+                            models = new ModelAgg[0];
+                        }
                     }
                 }
                 LastKey = key;   // 与 Python 一致：有数据（含归零）才更新脏标记
