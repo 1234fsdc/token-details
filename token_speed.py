@@ -395,6 +395,11 @@ def self_check():
     srow = session_speed_data(sdb, "s1", {"p":"P"}, model_hint="new-model")
     assert srow["title"] == "会话一" and len(srow["models"]) == 1
     assert srow["models"][0]["model"] == "new-model"
+    assert _is_model_name("GLM-5.3-Flash")
+    assert _is_model_name("account:bigmodel-start-plan/GLM-5.3-Flash")
+    assert not _is_model_name("停止生成")
+    assert _is_model_button("GLM-5.3-Flash", 1477, 0, 2906)
+    assert not _is_model_button("durkl261", 32, 0, 2906)
     # 标题绑定：Header 省略号截断串要能前缀匹配回完整 title
     sdb.execute("INSERT INTO session VALUES ('s2','这是一个很长很长的会话标题用来测试Header省略号截断',NULL,3)")
     assert find_session_by_title(sdb, "这是一个很长很长的会话标题用来测试Header省略号…") == "s2"
@@ -943,6 +948,23 @@ def session_speed_data(db, session_id, provs, limit=8, model_hint=""):
             "model": current_model, "models": models}
 
 
+def _is_model_name(name):
+    """UIA 模型按钮识别：兼容 provider/model 与无 provider 的版本化模型名。"""
+    s = str(name or "")
+    if not s or any(ch.isspace() for ch in s):
+        return False
+    if "/" in s:
+        a, b = s.split("/", 1)
+        return bool(a and b)
+    return (len(s) >= 3 and any(ch.isdigit() or ch in "-._:" for ch in s)
+            and all(ch.isascii() and (ch.isalnum() or ch in "-._:") for ch in s))
+
+
+def _is_model_button(name, left=0, root_left=0, root_width=0):
+    return _is_model_name(name) and ("/" in str(name or "") or root_width <= 0
+                                     or left > root_left + root_width * 0.30)
+
+
 def zcode_context():
     """读取 ZCode Header 当前任务标题和模型选择，供会话 overlay 绑定。"""
     if os.name != "nt":
@@ -953,9 +975,9 @@ $p=Get-Process ZCode -ErrorAction Stop | Where-Object {$_.MainWindowHandle -ne 0
 if(!$p){throw "ZCode main window not found"};
 $root=[System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle);
 $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
-$buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null; $modelTop=-999999;
+$buttons=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $rootRect=$root.Current.BoundingRectangle; $model=""; $anchor=$null; $modelTop=-999999;
 foreach($e in $buttons){$r=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
-if($r.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$" -and $r.Top -gt $modelTop){$modelTop=$r.Top; $model=$e.Current.Name};
+if($r.Width -gt 100 -and (($e.Current.Name -match "^[^/\s]+/[^/\s]+$") -or (($e.Current.Name -match "^(?=.*[0-9._:-])[A-Za-z0-9._:-]{3,}$") -and $r.Left -gt ($rootRect.Left + $rootRect.Width * .30))) -and $r.Top -gt $modelTop){$modelTop=$r.Top; $model=$e.Current.Name};
 if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$r.Left,[int]$r.Top,[int]$r.Width,[int]$r.Height)}}
 $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
 $texts=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";
@@ -1016,9 +1038,9 @@ function Walk($r){
                   # 全空、TTL 到期把运行中会话归零（用户 2026-10-02 反馈）；
                   # 只在整棵树一无所获时才清（元素已死的场景，防紧循环）
   $bc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button);
-  $buttons=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $model=""; $anchor=$null; $modelTop=-999999;
+  $buttons=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$bc); $rootRect=$r.Current.BoundingRectangle; $model=""; $anchor=$null; $modelTop=-999999;
   foreach($e in $buttons){$rc=$e.Current.BoundingRectangle; if($e.Current.IsOffscreen){continue};
-  if($rc.Width -gt 100 -and $e.Current.Name -match "^[^/\s]+/[^/\s]+$" -and $rc.Top -gt $modelTop){$modelTop=$rc.Top; $model=$e.Current.Name; $global:me=$e; $found=$true};
+  if($rc.Width -gt 100 -and (($e.Current.Name -match "^[^/\s]+/[^/\s]+$") -or (($e.Current.Name -match "^(?=.*[0-9._:-])[A-Za-z0-9._:-]{3,}$") -and $rc.Left -gt ($rootRect.Left + $rootRect.Width * .30))) -and $rc.Top -gt $modelTop){$modelTop=$rc.Top; $model=$e.Current.Name; $global:me=$e; $found=$true};
   if(!$anchor -and $e.Current.Name -eq "选择打开方式"){$anchor=@([int]$rc.Left,[int]$rc.Top,[int]$rc.Width,[int]$rc.Height); $global:ae=$e; $found=$true}}
   $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text);
   $texts=$r.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc); $title="";

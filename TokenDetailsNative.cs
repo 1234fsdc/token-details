@@ -363,7 +363,7 @@ class TDN
             + "AND (json_extract(m.data,'$.finish') IS NULL OR json_extract(m.data,'$.finish')='started') "
             + "AND NOT EXISTS (SELECT 1 FROM model_usage u WHERE u.assistant_message_id=m.id "
             + "OR u.id LIKE '%' || m.id || '%') GROUP BY 1,2", sid, cutoff);
-        List<RunInfo> leafCandidates = new List<RunInfo>();
+        List<RunInfo> candidates = new List<RunInfo>();
         string leaf = CanonicalUiModel(uiModel);
         for (int i = 0; i < rows.Length; i++)
         {
@@ -378,20 +378,22 @@ class TDN
             if (leaf.Length > 0 && canonical == leaf && providerOk)
             {
                 bool duplicate = false;
-                for (int j = 0; j < leafCandidates.Count; j++)
-                    if (leafCandidates[j].Model == candidate.Model
-                        && leafCandidates[j].Prov == candidate.Prov) duplicate = true;
-                if (!duplicate) leafCandidates.Add(candidate);
+                for (int j = 0; j < candidates.Count; j++)
+                    if (candidates[j].Model == candidate.Model && candidates[j].Prov == candidate.Prov)
+                        duplicate = true;
+                if (!duplicate) candidates.Add(candidate);
             }
         }
-        if (leafCandidates.Count == 1) return leafCandidates[0];
-        if (leaf.Length == 0 && rows.Length == 1)
+        // UIA 的模型按钮是全局选择器，切换会话时可能暂时仍显示上一个模型。
+        // 只有 session 内活动模型唯一时，数据库消息才是无歧义的权威来源。
+        if (candidates.Count == 0 && rows.Length == 1)
         {
             RunInfo only = new RunInfo();
             only.Model = CanonicalMessageModel(S(rows[0][0]), S(rows[0][1]));
             only.Prov = S(rows[0][1]) ?? ""; only.Started = L(rows[0][2]);
             return only;
         }
+        if (candidates.Count == 1 && rows.Length == 1) return candidates[0];
         return null;
     }
 
@@ -441,15 +443,31 @@ class TDN
     static bool EverAnchored;
     static int[] OverlayAnchor;
 
-    // ^[^/\s]+/[^/\s]+$ ：provider/model 格式（避免引正则引擎）
+    // 模型按钮通常是 provider/model；无 provider 的模型只接受 ASCII 版本化名称，
+    // 避免把“停止生成”“管理模型”等普通按钮当成模型。
     static bool IsModelName(string s)
     {
         if (String.IsNullOrEmpty(s)) return false;
         int slash = s.IndexOf('/');
-        if (slash <= 0 || slash >= s.Length - 1) return false;
+        if (slash >= 0 && (slash <= 0 || slash >= s.Length - 1)) return false;
+        bool bareMarker = false;
         for (int i = 0; i < s.Length; i++)
-            if (char.IsWhiteSpace(s[i])) return false;
-        return true;
+        {
+            char c = s[i];
+            if (char.IsWhiteSpace(c)) return false;
+            if (slash < 0 && !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == ':'))
+                return false;
+            if (slash < 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'
+                || c == '_' || c == ':')) bareMarker = true;
+        }
+        return slash >= 0 || (s.Length >= 3 && bareMarker);
+    }
+    static bool IsModelButton(string s, double left, double rootLeft, double rootWidth)
+    {
+        if (!IsModelName(s)) return false;
+        return s.IndexOf('/') >= 0 || rootWidth <= 0
+            || left > rootLeft + rootWidth * 0.30;
     }
     static string CanonicalUiModel(string s)
     {
@@ -516,6 +534,7 @@ class TDN
         bool found = false;
         string model = ""; int[] anchor = null;
         double modelTop = double.MinValue;
+        System.Windows.Rect rootRect = r.Current.BoundingRectangle;
         AutomationElement newT = null, newM = null, newA = null;
         PropertyCondition bc = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
         AutomationElementCollection buttons = r.FindAll(TreeScope.Descendants, bc);
@@ -527,7 +546,8 @@ class TDN
                 if (e.Current.IsOffscreen) continue;
                 string n = e.Current.Name ?? "";
                 // 模型按钮取最靠底部：真按钮在底栏，弹层条目在它上方（防串味）
-                if (rc.Width > 100 && IsModelName(n) && rc.Top > modelTop)
+                if (rc.Width > 100 && IsModelButton(n, rc.Left, rootRect.Left, rootRect.Width)
+                    && rc.Top > modelTop)
                 { modelTop = rc.Top; model = n; newM = e; found = true; }
                 if (anchor == null && n == "选择打开方式")
                 {

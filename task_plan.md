@@ -20,4 +20,12 @@
 ## 验证方法
 - 临时反射 harness：使用 `:memory:` SQLite 覆盖历史+运行、历史+空闲、首次运行无历史、结束 usage 四种场景；harness 不进入仓库。
 - `build_native.bat` 独立编译，检查 UTF-8 BOM。
-- 独立 `dist` native 进程真实桌面验证和 `weberr.log` 检查；不触碰安装版。
+- 独立 `dist` native 进程真实桌面回归和 `weberr.log` 检查；不触碰安装版。
+
+## 本轮根因修复（2026-10-06）
+- [x] 确认截图会话 `安卓应用在Windows上运行方案` 的数据库历史、活动 assistant 与 UIA 模型提示不一致。
+- [x] 让同一 session 唯一活动模型优先于全局 UIA 模型选择器；session 内多个活动模型且 UIA 无法无歧义对应时不猜测。
+- [x] 兼容 `GLM-5.3-Flash` 这类无 provider 前缀的模型按钮，并用主内容区几何排除侧栏账户 `durkl261`。
+- [x] 同步 native 主程序、`token_watcher.cs` 和 Python PowerShell 兜底 watcher 的识别规则。
+- [x] 完成 harness、Python self-check、native/watcher 编译和真实桌面 smoke。
+- [x] 更新调查、进度和变更记录，准备提交。

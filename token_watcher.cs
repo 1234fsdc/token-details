@@ -1,4 +1,4 @@
-// Token Details 原生 UIA watcher（用户 2026-10-02 改定：替代 PowerShell 版）。
+﻿// Token Details 原生 UIA watcher（用户 2026-10-02 改定：替代 PowerShell 版）。
 // 协议与 token_speed.py 里 UIA_WATCH_SCRIPT 完全一致：stdout 逐行 JSON
 // {title, model, anchor, ws}，变更才发行，走树前强制心跳，父进程死自退。
 // 编译（Windows 自带 csc，无需 SDK）：
@@ -9,7 +9,6 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Automation;
 
@@ -22,7 +21,31 @@ class TokenWatcher
     static string lastLine = "";
     static int parentPid, tick;
     static readonly Process Self = Process.GetCurrentProcess();
-    static readonly Regex ModelRe = new Regex("^[^/\\s]+/[^/\\s]+$");
+
+    static bool IsModelName(string s)
+    {
+        if (String.IsNullOrEmpty(s)) return false;
+        int slash = s.IndexOf('/');
+        if (slash >= 0 && (slash <= 0 || slash >= s.Length - 1)) return false;
+        bool bareMarker = false;
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (char.IsWhiteSpace(c)) return false;
+            if (slash < 0 && !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == ':'))
+                return false;
+            if (slash < 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'
+                || c == '_' || c == ':')) bareMarker = true;
+        }
+        return slash >= 0 || (s.Length >= 3 && bareMarker);
+    }
+    static bool IsModelButton(string s, double left, double rootLeft, double rootWidth)
+    {
+        if (!IsModelName(s)) return false;
+        return s.IndexOf('/') >= 0 || rootWidth <= 0
+            || left > rootLeft + rootWidth * 0.30;
+    }
 
     static StreamWriter Out;
 
@@ -61,6 +84,7 @@ class TokenWatcher
         bool found = false;
         string model = ""; int[] anchor = null;
         double modelTop = double.MinValue;
+        var rootRect = r.Current.BoundingRectangle;
         var bc = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
         var buttons = r.FindAll(TreeScope.Descendants, bc);
         foreach (AutomationElement e in buttons)
@@ -74,7 +98,8 @@ class TokenWatcher
                 // 选项条目同名同格式且在它上方——首匹配会选中弹层条目，弹层
                 // 关闭后元素脱离界面却持续吐旧值（读旧模型名 → 会话无该模型
                 // 记录 → 运行中显示 0，用户 2026-10-03 反馈，bind-zero 实锤）
-                if (rc.Width > 100 && ModelRe.IsMatch(n) && rc.Top > modelTop)
+                if (rc.Width > 100 && IsModelButton(n, rc.Left, rootRect.Left, rootRect.Width)
+                    && rc.Top > modelTop)
                 { modelTop = rc.Top; model = n; modelEl = e; found = true; }
                 if (anchor == null && n == "选择打开方式")
                 {
