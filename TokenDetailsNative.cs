@@ -1433,7 +1433,7 @@ class TDN
             0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, wc.inst, IntPtr.Zero);
     }
 
-    // ================= 详情三页（原生 GDI 版，对照 detail_html/page_ov/spd/tok） =================
+    // ================= 详情三页（原生 GDI 版，钛白方案三，对照 docs/preview/detail-style-preview.html） =================
     class SumData { public long N, Tok, TalkTok, TalkMs, Out, Inp, Reason, Cache;
                     public double Ttft, Rpm; }
     class SessData { public string Title, Model; public long Cnt, Usage, Last;
@@ -1465,21 +1465,28 @@ class TDN
     static int LastDetailCalc;
     static DetailData DD = new DetailData();
     static double DetailScale = 1.0;
-    static Font DFBase, DFSec, DFName, DFMeta, DFVal, DFCardV, DFCardK, DFTab, DFChart;
+    static Font DFBase, DFSec, DFName, DFMeta, DFVal, DFCardV, DFCardK, DFTab, DFChart, DFSel;
     static uint DetailFontDpi;
     static readonly RectI[] TabRects = new RectI[] { new RectI(), new RectI(), new RectI() };
     static readonly RectI CloseRect = new RectI();
 
-    static readonly Color InkD = Color.FromArgb(255, 0x1A, 0x1D, 0x22);
-    static readonly Color MutedD = Color.FromArgb(255, 0x9A, 0x97, 0x8C);
-    static readonly Color PaperD = Color.FromArgb(255, 0xFF, 0xFD, 0xF8);
-    static readonly Color LineD = Color.FromArgb(255, 0xE9, 0xE5, 0xDA);
-    static readonly Color HairD = Color.FromArgb(255, 0xF0, 0xEC, 0xE1);
-    static readonly Color VermD = Color.FromArgb(255, 0xFF, 0x4D, 0x2E);
-    static readonly Color BarBgD = Color.FromArgb(255, 0xD9, 0xD2, 0xC4);
-    static readonly Color FastD = Color.FromArgb(255, 0x0A, 0x8F, 0x46);
-    static readonly Color MidD = Color.FromArgb(255, 0xD9, 0x77, 0x06);
-    static readonly Color SlowD = Color.FromArgb(255, 0xDC, 0x26, 0x26);
+    // 钛白（Titan White 方案三，对照 detail-style-preview.html .theme-titan）：
+    // rgba(37,99,160,a) 分隔线均已按白底 #ffffff 预合成
+    static readonly Color InkD = Color.FromArgb(255, 0x1B, 0x22, 0x2B);      // #1b222b 正文
+    static readonly Color MutedD = Color.FromArgb(255, 0x66, 0x71, 0x7F);    // #66717f 弱化
+    static readonly Color PaperD = Color.FromArgb(255, 0xFF, 0xFF, 0xFF);    // #ffffff 白底
+    static readonly Color HeadD = Color.FromArgb(255, 0xF6, 0xF8, 0xFA);     // #f6f8fa 头部
+    static readonly Color LineD = Color.FromArgb(255, 0xDC, 0xE6, 0xF0);     // 分隔线 rgba(.16)
+    static readonly Color HairD = Color.FromArgb(255, 0xE5, 0xEC, 0xF4);     // 行分隔 rgba(.12)
+    static readonly Color VermD = Color.FromArgb(255, 0xC2, 0x45, 0x3A);     // #c2453a 总量行
+    static readonly Color BarBgD = Color.FromArgb(255, 0xB3, 0xC9, 0xDE);    // 图表底/虚线框 rgba(.35)
+    static readonly Color FastD = Color.FromArgb(255, 0x1E, 0x7A, 0x56);     // #1e7a56 快
+    static readonly Color MidD = Color.FromArgb(255, 0xB8, 0x79, 0x1D);      // #b8791d 中/琥珀强调
+    static readonly Color SlowD = Color.FromArgb(255, 0xC2, 0x45, 0x3A);     // #c2453a 慢
+    static readonly Color AccentD = Color.FromArgb(255, 0x25, 0x63, 0xA0);   // #2563a0 钢蓝
+    static readonly Color RuleD = Color.FromArgb(255, 0xC2, 0xD3, 0xE4);     // 标题细线 rgba(.28)
+    static readonly Color SrcTrackD = Color.FromArgb(255, 0xEE, 0xF2, 0xF7); // #eef2f7 来源轨道
+    static readonly Color SrcTrackLineD = Color.FromArgb(255, 0xB2, 0xC7, 0xDD); // 轨道描边 rgba(.3)
     static Color SpdC(double v) { return v >= 80 ? FastD : (v >= 50 ? MidD : SlowD); }
 
     // 中文计量（对照 _k：亿/万）
@@ -1761,17 +1768,18 @@ class TDN
         if (DFCardK != null) DFCardK.Dispose();
         if (DFTab != null) DFTab.Dispose();
         if (DFChart != null) DFChart.Dispose();
+        if (DFSel != null) DFSel.Dispose();
+        // 钛白：数字/元信息走 Consolas 等宽，页签与中文界面走 Segoe UI（GDI 对缺字自动回退）
         DFBase = new Font("Segoe UI", (int)Math.Round(13 * s), FontStyle.Regular, GraphicsUnit.Pixel);
-        DFSec = new Font("Segoe UI", (int)Math.Round(10 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        DFSec = new Font("Consolas", (int)Math.Round(10 * s), FontStyle.Regular, GraphicsUnit.Pixel);
         DFName = new Font("Segoe UI", (int)Math.Round(13 * s), FontStyle.Bold, GraphicsUnit.Pixel);
-        DFMeta = new Font("Segoe UI", (int)Math.Round(10.5 * s), FontStyle.Regular, GraphicsUnit.Pixel);
-        try { DFVal = new Font("Bahnschrift", (int)Math.Round(17 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
-        catch { DFVal = new Font("Segoe UI", (int)Math.Round(17 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
-        try { DFCardV = new Font("Bahnschrift", (int)Math.Round(20 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
-        catch { DFCardV = new Font("Segoe UI", (int)Math.Round(20 * s), FontStyle.Bold, GraphicsUnit.Pixel); }
-        DFCardK = new Font("Segoe UI", (int)Math.Round(9.5 * s), FontStyle.Regular, GraphicsUnit.Pixel);
-        DFTab = new Font("Segoe UI", (int)Math.Round(15 * s), FontStyle.Bold, GraphicsUnit.Pixel);
-        DFChart = new Font("Segoe UI", (int)Math.Round(9 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        DFMeta = new Font("Consolas", (int)Math.Round(10.5 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        DFSel = new Font("Consolas", (int)Math.Round(10.5 * s), FontStyle.Bold, GraphicsUnit.Pixel);
+        DFVal = new Font("Consolas", (int)Math.Round(16 * s), FontStyle.Bold, GraphicsUnit.Pixel);
+        DFCardV = new Font("Consolas", (int)Math.Round(22 * s), FontStyle.Bold, GraphicsUnit.Pixel);
+        DFCardK = new Font("Consolas", (int)Math.Round(9 * s), FontStyle.Regular, GraphicsUnit.Pixel);
+        DFTab = new Font("Segoe UI", (int)Math.Round(13 * s), FontStyle.Bold, GraphicsUnit.Pixel);
+        DFChart = new Font("Consolas", (int)Math.Round(9 * s), FontStyle.Regular, GraphicsUnit.Pixel);
     }
 
     // 一行：名称 + 右侧 meta 串 + 值 + 条
@@ -1790,6 +1798,20 @@ class TDN
             else hi = mid - 1;
         }
         return text.Substring(0, lo) + ell;
+    }
+
+    // 圆角矩形路径（页签胶囊/来源轨道/窗口圆角，radius 单位=物理px）
+    static System.Drawing.Drawing2D.GraphicsPath RoundPath(float x, float y, float w, float h, float r)
+    {
+        System.Drawing.Drawing2D.GraphicsPath p = new System.Drawing.Drawing2D.GraphicsPath();
+        if (r <= 0) { p.AddRectangle(new RectangleF(x, y, w, h)); return p; }
+        float d = r * 2;
+        p.AddArc(x, y, d, d, 180, 90);
+        p.AddArc(x + w - d, y, d, d, 270, 90);
+        p.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+        p.AddArc(x, y + h - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 
     static int DrawRow(Graphics g, int y, int w, int pad, string name, string meta,
@@ -1818,39 +1840,68 @@ class TDN
             using (SolidBrush b = new SolidBrush(MutedD))
                 g.DrawString(metaDraw, DFMeta, b, metaX, y + 5 * (float)s, fmt);
         int barY = y + (int)Math.Round(24 * s);
+        int hair = Math.Max(1, (int)Math.Round(1 * s));       // 分隔发丝 1 逻辑px
+        int barH = Math.Max(2, (int)Math.Round(2 * s));       // 色条 2 逻辑px，底对齐发丝
         using (SolidBrush b = new SolidBrush(HairD))
-            g.FillRectangle(b, x0, barY, rx - x0, 2);
+            g.FillRectangle(b, x0, barY, rx - x0, hair);
         int fill = Math.Max(0, Math.Min(100, barPct)) * ((int)rx - (int)x0) / 100;
         if (fill > 0)
             using (SolidBrush b = new SolidBrush(barC))
-                g.FillRectangle(b, x0, barY, fill, 2);
+                g.FillRectangle(b, x0, barY - barH + hair, fill, barH);
         return y + (int)Math.Round(46 * s);
     }
 
-    static int DrawSec(Graphics g, int y, string text)
+    // 区段标题：钢蓝等宽字 + 右侧延伸发丝线（对照 .section-title::after）
+    static int DrawSec(Graphics g, int y, int w, string text)
     {
-        using (SolidBrush b = new SolidBrush(MutedD))
-            g.DrawString(text, DFSec, b, 26 * (float)DetailScale, y, StringFormat.GenericTypographic);
-        return y + (int)Math.Round(24 * DetailScale);
+        double s = DetailScale;
+        StringFormat fmt = StringFormat.GenericTypographic;
+        float x0 = (float)Math.Round(26 * s);
+        using (SolidBrush b = new SolidBrush(AccentD))
+            g.DrawString(text, DFSec, b, x0, y, fmt);
+        SizeF tw = g.MeasureString(text, DFSec, PointF.Empty, fmt);
+        float ruleX = x0 + tw.Width + (float)Math.Round(8 * s);
+        float ruleW = w - (float)Math.Round(26 * s) - ruleX;
+        if (ruleW > (float)Math.Round(6 * s))
+            using (SolidBrush b = new SolidBrush(RuleD))
+                g.FillRectangle(b, ruleX, y + tw.Height / 2f,
+                                ruleW, Math.Max(1f, (float)Math.Round(1 * s)));
+        return y + (int)Math.Round(24 * s);
     }
-    static int DrawEmpty(Graphics g, int y, string text)
+    // 空态：虚线框（对照 .empty）
+    static int DrawEmpty(Graphics g, int y, int w, string text)
     {
+        double s = DetailScale;
+        StringFormat fmt = StringFormat.GenericTypographic;
+        float x0 = (float)Math.Round(26 * s);
+        float rx = w - (float)Math.Round(26 * s);
+        float boxH = (float)Math.Round(46 * s);
+        using (Pen p = new Pen(BarBgD, Math.Max(1f, (float)Math.Round(1 * s))))
+        {
+            p.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
+            g.DrawRectangle(p, x0, y, rx - x0, boxH);
+        }
+        SizeF tw = g.MeasureString(text, DFBase, PointF.Empty, fmt);
         using (SolidBrush b = new SolidBrush(MutedD))
-            g.DrawString(text, DFBase, b, 26 * (float)DetailScale, y, StringFormat.GenericTypographic);
-        return y + (int)Math.Round(46 * DetailScale);
+            g.DrawString(text, DFBase, b,
+                         x0 + (rx - x0 - tw.Width) / 2f,
+                         y + (boxH - tw.Height) / 2f, fmt);
+        return y + (int)Math.Round(58 * s);
     }
 
     static int DrawCards(Graphics g, int y, int w, string[] keys, string[] vals, Color[] vc)
     {
         double s = DetailScale;
         int colW = (w - (int)Math.Round(92 * s)) / 3;
-        int x = (int)Math.Round(28 * s);
+        int x = (int)Math.Round(26 * s);
         StringFormat fmt = StringFormat.GenericTypographic;
         for (int i = 0; i < keys.Length; i++)
         {
             if (i > 0)
                 using (SolidBrush b = new SolidBrush(LineD))
-                    g.FillRectangle(b, x - (int)Math.Round(9 * s), y, 1, (int)Math.Round(40 * s));
+                    g.FillRectangle(b, x - (int)Math.Round(9 * s), y,
+                                    Math.Max(1, (int)Math.Round(1 * s)),
+                                    (int)Math.Round(46 * s));
             float maxW = colW - (float)Math.Round(8 * s);
             string key = FitText(g, keys[i], DFCardK, maxW, fmt);
             using (SolidBrush b = new SolidBrush(MutedD))
@@ -1875,6 +1926,11 @@ class TDN
             if (compactFont != null) compactFont.Dispose();
             x += colW + (int)Math.Round(18 * s);
         }
+        // 卡片区底部发丝线（对照 .kpi-grid border-bottom）
+        using (SolidBrush b = new SolidBrush(LineD))
+            g.FillRectangle(b, (int)Math.Round(26 * s), y + (int)Math.Round(48 * s),
+                            w - (int)Math.Round(52 * s),
+                            Math.Max(1, (int)Math.Round(1 * s)));
         return y + (int)Math.Round(58 * s);
     }
 
@@ -1886,78 +1942,123 @@ class TDN
         DetailScale = dpi / 96.0;
         double s = DetailScale;
         int w = (int)Math.Round(440 * s), h = (int)Math.Round(660 * s);
-        int headerH = (int)Math.Round(78 * s);
-        int contentTop = (int)Math.Round(90 * s);
+        int headerH = (int)Math.Round(52 * s);
+        int contentTop = (int)Math.Round(56 * s);
         using (Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
         {
             using (Graphics g = Graphics.FromImage(bmp))
             {
                 g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
                 StringFormat typ = StringFormat.GenericTypographic;
+                // 8px 圆角窗口（对照 --win-radius）：先整窗裁剪，四角保持透明
+                using (System.Drawing.Drawing2D.GraphicsPath winPath =
+                       RoundPath(0, 0, w, h, (float)Math.Round(8 * s)))
+                    g.SetClip(winPath);
                 using (SolidBrush pb = new SolidBrush(PaperD))
                     g.FillRectangle(pb, 0, 0, w, h);
-                // 第一行：页面标签；右上角日期与关闭按钮各占独立区域
+                using (SolidBrush hb = new SolidBrush(HeadD))
+                    g.FillRectangle(hb, 0, 0, w, headerH);
+                float bw = Math.Max(1f, (float)Math.Round(1 * s));
+                using (System.Drawing.Drawing2D.GraphicsPath winPath =
+                       RoundPath(bw / 2f, bw / 2f, w - bw, h - bw,
+                                 (float)Math.Round(8 * s) - bw / 2f))
+                using (Pen bp = new Pen(RuleD, bw))
+                    g.DrawPath(bp, winPath);
+                // 单行头部：页签胶囊（左）+ 来源分段 + 日期 + X（右）
                 string[] tabs = new string[] { "总览", "速度", "总量" };
-                int tabX = (int)Math.Round(26 * s);
+                float tabX = (float)Math.Round(16 * s);
+                float tabY = (float)Math.Round(11 * s);
+                float tabH = (float)Math.Round(30 * s);
                 for (int i = 0; i < 3; i++)
                 {
                     bool on = i == DetailPage;
-                    using (SolidBrush b = new SolidBrush(on ? InkD : MutedD))
-                        g.DrawString(tabs[i], DFTab, b, tabX, (int)Math.Round(12 * s), typ);
                     SizeF tw = g.MeasureString(tabs[i], DFTab, PointF.Empty, typ);
-                    TabRects[i].X = tabX; TabRects[i].Y = (int)Math.Round(8 * s);
-                    TabRects[i].W = (int)Math.Round(tw.Width); TabRects[i].H = (int)Math.Round(28 * s);
-                    tabX += (int)Math.Round(tw.Width) + (int)Math.Round(18 * s);
+                    float pw = tw.Width + (float)Math.Round(16 * s);
+                    if (on)
+                        using (System.Drawing.Drawing2D.GraphicsPath pill =
+                               RoundPath(tabX, tabY, pw, tabH, (float)Math.Round(6 * s)))
+                        using (SolidBrush b = new SolidBrush(AccentD))
+                            g.FillPath(b, pill);
+                    using (SolidBrush b = new SolidBrush(on ? Color.White : MutedD))
+                        g.DrawString(tabs[i], DFTab, b,
+                                     tabX + (pw - tw.Width) / 2f,
+                                     tabY + (tabH - tw.Height) / 2f, typ);
+                    TabRects[i].X = (int)Math.Round(tabX);
+                    TabRects[i].Y = (int)tabY;
+                    TabRects[i].W = (int)Math.Ceiling(pw);
+                    TabRects[i].H = (int)tabH;
+                    tabX += pw + (float)Math.Round(4 * s);
                 }
-                using (SolidBrush b = new SolidBrush(MutedD))
-                {
-                    string stamp = DateTime.Now.ToString("MM-dd");
-                    SizeF stampSize = g.MeasureString(stamp, DFMeta, PointF.Empty, typ);
-                    g.DrawString(stamp, DFMeta, b,
-                                 w - (float)Math.Round(46 * s) - stampSize.Width,
-                                 (float)Math.Round(12 * s), typ);
-                }
-                // X：单独的右上角关闭按钮
-                CloseRect.X = w - (int)Math.Round(34 * s);
-                CloseRect.Y = (int)Math.Round(7 * s);
-                CloseRect.W = (int)Math.Round(26 * s);
-                CloseRect.H = (int)Math.Round(30 * s);
+                // X 关闭（右缘，36x34 热区）
+                CloseRect.X = w - (int)Math.Round(42 * s);
+                CloseRect.Y = (int)Math.Round(9 * s);
+                CloseRect.W = (int)Math.Round(36 * s);
+                CloseRect.H = (int)Math.Round(34 * s);
                 using (Pen p = new Pen(MutedD, (float)Math.Max(1.5, 1.5 * s)))
                 {
                     float cx = CloseRect.X + CloseRect.W / 2f;
                     float cy = CloseRect.Y + CloseRect.H / 2f;
-                    g.DrawLine(p, cx - 5 * (float)s, cy - 5 * (float)s,
-                                  cx + 5 * (float)s, cy + 5 * (float)s);
-                    g.DrawLine(p, cx + 5 * (float)s, cy - 5 * (float)s,
-                                  cx - 5 * (float)s, cy + 5 * (float)s);
+                    g.DrawLine(p, cx - 5.5f * (float)s, cy - 5.5f * (float)s,
+                                  cx + 5.5f * (float)s, cy + 5.5f * (float)s);
+                    g.DrawLine(p, cx + 5.5f * (float)s, cy - 5.5f * (float)s,
+                                  cx - 5.5f * (float)s, cy + 5.5f * (float)s);
                 }
-                // 第二行：独立的来源分段选择器
+                // 日期（钢蓝，紧贴 X 左侧）
+                string stamp = DateTime.Now.ToString("MM-dd");
+                SizeF stampSize = g.MeasureString(stamp, DFMeta, PointF.Empty, typ);
+                float dateX = CloseRect.X - (float)Math.Round(6 * s) - stampSize.Width;
+                using (SolidBrush b = new SolidBrush(AccentD))
+                    g.DrawString(stamp, DFMeta, b, dateX,
+                                 (headerH - stampSize.Height) / 2f, typ);
+                // 来源分段：紧凑轨道 + 选中钢蓝填充（对照 .theme-titan .source-tabs）
+                // 轨道宽按粗体测宽固定，切换来源时轨道尺寸不抖动
                 string[] tools = new string[] { "ZCode", "Codex" };
-                int toolY = (int)Math.Round(48 * s);
-                int toolLeft = (int)Math.Round(26 * s);
-                int toolRight = w - (int)Math.Round(26 * s);
-                int toolW = (toolRight - toolLeft) / 2;
+                float segH = (float)Math.Round(26 * s);
+                float segPad = (float)Math.Round(3 * s);
+                float segGap = (float)Math.Round(2 * s);
+                float segIn = (float)Math.Round(1 * s);
+                float[] bwv = new float[2];
+                for (int i = 0; i < 2; i++)
+                    bwv[i] = g.MeasureString(tools[i], DFSel, PointF.Empty, typ).Width
+                             + (float)Math.Round(16 * s);
+                float trackW = bwv[0] + bwv[1] + segGap + segPad * 2 + segIn * 2;
+                float trackH = segH + segPad * 2 + segIn * 2;
+                float trackX = dateX - (float)Math.Round(8 * s) - trackW;
+                float trackY = (headerH - trackH) / 2f;
+                using (System.Drawing.Drawing2D.GraphicsPath track =
+                       RoundPath(trackX, trackY, trackW, trackH, (float)Math.Round(6 * s)))
+                {
+                    using (SolidBrush b = new SolidBrush(SrcTrackD))
+                        g.FillPath(b, track);
+                    using (Pen p = new Pen(SrcTrackLineD, bw))
+                        g.DrawPath(p, track);
+                }
+                float segX = trackX + segIn + segPad;
                 for (int i = 0; i < 2; i++)
                 {
-                    ToolRects[i].X = toolLeft + i * toolW;
-                    ToolRects[i].Y = toolY - (int)Math.Round(5 * s);
-                    ToolRects[i].W = toolW;
-                    ToolRects[i].H = (int)Math.Round(28 * s);
                     bool on = i == DetailTool;
+                    float segY = trackY + segIn + segPad;
                     if (on)
-                    {
-                        using (SolidBrush b = new SolidBrush(Color.FromArgb(255, 0xF0, 0xEC, 0xE1)))
-                            g.FillRectangle(b, ToolRects[i].X, ToolRects[i].Y,
-                                            ToolRects[i].W, ToolRects[i].H);
-                    }
-                    SizeF tw2 = g.MeasureString(tools[i], DFMeta, PointF.Empty, typ);
-                    using (SolidBrush b = new SolidBrush(on ? InkD : MutedD))
-                        g.DrawString(tools[i], DFMeta, b,
-                                     ToolRects[i].X + (ToolRects[i].W - tw2.Width) / 2f,
-                                     toolY, typ);
+                        using (System.Drawing.Drawing2D.GraphicsPath pill =
+                               RoundPath(segX, segY, bwv[i], segH, (float)Math.Round(4 * s)))
+                        using (SolidBrush b = new SolidBrush(AccentD))
+                            g.FillPath(b, pill);
+                    Font sf = on ? DFSel : DFMeta;
+                    SizeF tw2 = g.MeasureString(tools[i], sf, PointF.Empty, typ);
+                    using (SolidBrush b = new SolidBrush(on ? Color.White : MutedD))
+                        g.DrawString(tools[i], sf, b,
+                                     segX + (bwv[i] - tw2.Width) / 2f,
+                                     segY + (segH - tw2.Height) / 2f, typ);
+                    ToolRects[i].X = (int)Math.Round(segX);
+                    ToolRects[i].Y = (int)Math.Round(segY);
+                    ToolRects[i].W = (int)Math.Ceiling(bwv[i]);
+                    ToolRects[i].H = (int)segH;
+                    segX += bwv[i] + segGap;
                 }
+                // 头部底线
                 using (SolidBrush b = new SolidBrush(LineD))
-                    g.FillRectangle(b, 0, headerH, w, 1);
+                    g.FillRectangle(b, 0, headerH, w,
+                                    Math.Max(1, (int)Math.Round(1 * s)));
                 // 内容区：滚动态裁剪，绘制 y 随 DetailScroll 上移
                 System.Drawing.Drawing2D.GraphicsState gs = g.Save();
                 g.SetClip(new Rectangle(0, contentTop, w, h - contentTop));
@@ -1971,8 +2072,8 @@ class TDN
                         new string[] { sm.N + " 次", string.Format("{0:0.0} t/s", avg),
                                        Kcn(sm.Tok - (long)(sm.Cache * 0.9)) },
                         new Color[] { InkD, SpdC(avg), InkD });
-                    y = DrawSec(g, y, "每模型速度 · 今日");
-                    if (DD.Dm.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
+                    y = DrawSec(g, y, w, "每模型速度 · 今日");
+                    if (DD.Dm.Length == 0) y = DrawEmpty(g, y, w, "今日暂无数据");
                     for (int i = 0; i < DD.Dm.Length; i++)
                     {
                         DmData m = DD.Dm[i];
@@ -1981,8 +2082,8 @@ class TDN
                             m.Prov + "  " + m.Cnt + " 次  " + string.Format("{0:0.0}", m.Rpm) + " 次/分",
                             m.Tps, SpdC(m.TpsV), pct, SpdC(m.TpsV));
                     }
-                    y = DrawSec(g, y, "活跃会话 · 30 分钟窗口");
-                    if (DD.Sess.Length == 0) y = DrawEmpty(g, y, "30 分钟内无活动会话");
+                    y = DrawSec(g, y, w, "活跃会话 · 30 分钟窗口");
+                    if (DD.Sess.Length == 0) y = DrawEmpty(g, y, w, "30 分钟内无活动会话");
                     for (int i = 0; i < DD.Sess.Length; i++)
                     {
                         SessData x = DD.Sess[i];
@@ -2004,8 +2105,8 @@ class TDN
                                        (DetailTool == 1 ? "-" :
                                         (sm.Ttft > 0 ? string.Format("{0:0.0} s", sm.Ttft) : "-")) },
                         new Color[] { SpdC(avg), InkD, InkD });
-                    y = DrawSec(g, y, "每模型速度 · 今日（最近 8 条加权）");
-                    if (DD.Dm.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
+                    y = DrawSec(g, y, w, "每模型速度 · 今日（最近 8 条加权）");
+                    if (DD.Dm.Length == 0) y = DrawEmpty(g, y, w, "今日暂无数据");
                     for (int i = 0; i < DD.Dm.Length; i++)
                     {
                         DmData m = DD.Dm[i];
@@ -2014,8 +2115,8 @@ class TDN
                             m.Prov + "  " + m.Cnt + " 次  " + string.Format("{0:0.0}", m.Rpm) + " 次/分",
                             m.Tps, SpdC(m.TpsV), pct, SpdC(m.TpsV));
                     }
-                    y = DrawSec(g, y, "会话速度 · 30 分钟窗口");
-                    if (DD.Sess.Length == 0) y = DrawEmpty(g, y, "30 分钟内无活动会话");
+                    y = DrawSec(g, y, w, "会话速度 · 30 分钟窗口");
+                    if (DD.Sess.Length == 0) y = DrawEmpty(g, y, w, "30 分钟内无活动会话");
                     for (int i = 0; i < DD.Sess.Length; i++)
                     {
                         SessData x = DD.Sess[i];
@@ -2033,8 +2134,8 @@ class TDN
                         new string[] { Kcn(sm.Tok - (long)(sm.Cache * 0.9)), sm.N + " 次",
                                        Kcn((long)(sm.Inp + sm.Cache * 0.1)) + " / " + Kcn(sm.Out + sm.Reason) },
                         new Color[] { InkD, InkD, InkD });
-                    y = DrawSec(g, y, "按模型 · 今日");
-                    if (DD.Bm.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
+                    y = DrawSec(g, y, w, "按模型 · 今日");
+                    if (DD.Bm.Length == 0) y = DrawEmpty(g, y, w, "今日暂无数据");
                     for (int i = 0; i < DD.Bm.Length; i++)
                     {
                         BmData m = DD.Bm[i];
@@ -2042,10 +2143,10 @@ class TDN
                             m.Prov + "  " + m.Tok.ToString("#,0") + " tok  " + m.Cnt + " 次  " + m.Pct + "%",
                             m.Pct + "%", VermD, m.Pct, VermD);
                     }
-                    y = DrawSec(g, y, "按会话 · 今日");
+                    y = DrawSec(g, y, w, "按会话 · 今日");
                     long tsSum = 1;
                     for (int i = 0; i < DD.Ts.Length; i++) tsSum += DD.Ts[i].Tok;
-                    if (DD.Ts.Length == 0) y = DrawEmpty(g, y, "今日暂无数据");
+                    if (DD.Ts.Length == 0) y = DrawEmpty(g, y, w, "今日暂无数据");
                     for (int i = 0; i < DD.Ts.Length; i++)
                     {
                         TsData x = DD.Ts[i];
@@ -2055,8 +2156,8 @@ class TDN
                     }
                     long cn = 0;
                     for (int i = 0; i < DD.Cp.Length; i++) cn += DD.Cp[i].N;
-                    y = DrawSec(g, y, "会话压缩 · 30 天内 " + cn + " 次");
-                    if (DD.Cp.Length == 0) y = DrawEmpty(g, y, "30 天内无压缩会话");
+                    y = DrawSec(g, y, w, "会话压缩 · 30 天内 " + cn + " 次");
+                    if (DD.Cp.Length == 0) y = DrawEmpty(g, y, w, "30 天内无压缩会话");
                     for (int i = 0; i < DD.Cp.Length; i++)
                     {
                         CpData x = DD.Cp[i];
@@ -2070,7 +2171,7 @@ class TDN
                     {
                         long mx = 1;
                         for (int i = 0; i < DD.Days.Length; i++) if (DD.Days[i].Tok > mx) mx = DD.Days[i].Tok;
-                        y = DrawSec(g, y, "近 7 日 token");
+                        y = DrawSec(g, y, w, "近 7 日 token");
                         int chW = w - (int)Math.Round(52 * s);
                         int colW = chW / 7;
                         int chartY = y + (int)Math.Round(16 * s);
