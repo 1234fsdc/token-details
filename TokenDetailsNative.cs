@@ -175,7 +175,7 @@ class TDN
     }
     static long RowTok(object[] r) { return L(r[8]) + L(r[9]); }
 
-    class ModelAgg { public string Model; public string Tps; public long Last; }
+    class ModelAgg { public string Model; public string Provider; public string Tps; public long Last; }
 
     // ---- 无回报模型估算（对照 _est_map：窗口内 >=3 条完成行且输出回报合计 <20 tok
     //      判为"无回报"，用 part 正文字符数 x 0.6 折算；数据驱动不点名模型） ----
@@ -260,26 +260,38 @@ class TDN
         return tok;
     }
 
-    static ModelAgg[] SessionSpeed(string sid, string modelHint)
+    static ModelAgg[] SessionSpeed(string sid, string modelHint, string providerHint)
     {
         if (String.IsNullOrEmpty(sid) || DbH == IntPtr.Zero) return new ModelAgg[0];
         string cur = modelHint == null ? "" : modelHint.Trim();
+        string prov = providerHint == null ? "" : providerHint.Trim();
         if (cur.Length == 0)
         {   // 无 hint：取该会话最新 assistant 消息的模型（对照 Python 回退查询）
             object[][] m = Query("SELECT COALESCE(json_extract(data,'$.modelId'), "
-                + "json_extract(data,'$.modelID')) FROM message "
+                + "json_extract(data,'$.modelID')), COALESCE(json_extract(data,'$.providerId'), "
+                + "json_extract(data,'$.providerID')) FROM message "
                 + "WHERE session_id=? AND json_extract(data,'$.role')='assistant' "
                 + "ORDER BY time_updated DESC LIMIT 1", sid);
-            cur = m.Length > 0 ? (S(m[0][0]) ?? "") : "";
+            if (m.Length > 0)
+            {
+                cur = CanonicalMessageModel(S(m[0][0]), S(m[0][1]));
+                if (prov.Length == 0) prov = S(m[0][1]) ?? "";
+            }
         }
         string q = "SELECT id, provider_id, model_id, status, started_at, first_token_at, "
             + "completed_at, duration_ms, output_tokens, reasoning_tokens FROM model_usage "
             + "WHERE session_id=? AND status='completed' AND query_source!='compact' ";
-        object[] args;
-        if (cur.Length > 0) { q += "AND model_id=? "; args = new object[] { sid, cur }; }
-        else args = new object[] { sid };
+        List<object> argList = new List<object>(); argList.Add(sid);
+        if (cur.Length > 0)
+        {
+            // 新旧库有时把 provider 前缀写进 model_id，有时拆到 provider_id；两种
+            // 只有在 provider 同时匹配时都接受，避免跨 provider 串模型。
+            q += "AND (model_id=? OR (model_id=provider_id || '/' || ?)) ";
+            argList.Add(cur); argList.Add(cur);
+        }
+        if (prov.Length > 0) { q += "AND provider_id=? "; argList.Add(prov); }
         q += "ORDER BY COALESCE(completed_at, started_at) DESC LIMIT " + SpeedQueryLimit;
-        object[][] rows = Query(q, args);
+        object[][] rows = Query(q, argList.ToArray());
         Dictionary<string, long> est = EstMap(DbH, rows);
         Dictionary<object[], long> eff = new Dictionary<object[], long>();
         Dictionary<string, List<object[]>> by = new Dictionary<string, List<object[]>>();
@@ -302,7 +314,7 @@ class TDN
             for (int i = 0; i < per; i++) { tot += eff[lst[i]]; el += ElapsedMs(lst[i]); }
             if (el <= 0) continue;
             ModelAgg a = new ModelAgg();
-            a.Model = mdl;
+            a.Model = mdl; a.Provider = S(lst[0][1]) ?? "";
             a.Tps = (tot * 1000.0 / el).ToString("0.0");
             a.Last = L(lst[0][6]) != 0 ? L(lst[0][6]) : L(lst[0][4]);
             res.Add(a);
@@ -339,29 +351,77 @@ class TDN
         return r.Length > 0 ? L(r[0][0]) : 0;
     }
 
-    // 当前会话/模型是否还有未结束的 assistant 请求。model_usage 只在请求结束时落库，
-    // 因此运行中的回合不能参与速度计算，但有历史速度时不应被 90s 门控清成 0。
-    static bool SessionHasRunningRequest(string sid, string modelId)
+    static RunInfo RunningModelForSession(string sid, string uiModel, string uiProvider)
+    {
+        if (String.IsNullOrEmpty(sid) || DbH == IntPtr.Zero) return null;
+        long cutoff = UnixMs() - 30 * 60 * 1000L;
+        object[][] rows = Query("SELECT COALESCE(json_extract(m.data,'$.modelId'), "
+            + "json_extract(m.data,'$.modelID')), COALESCE(json_extract(m.data,'$.providerId'), "
+            + "json_extract(m.data,'$.providerID')), MIN(m.time_created) "
+            + "FROM message m WHERE m.session_id=? "
+            + "AND json_extract(m.data,'$.role')='assistant' AND m.time_created>=? "
+            + "AND (json_extract(m.data,'$.finish') IS NULL OR json_extract(m.data,'$.finish')='started') "
+            + "AND NOT EXISTS (SELECT 1 FROM model_usage u WHERE u.assistant_message_id=m.id "
+            + "OR u.id LIKE '%' || m.id || '%') GROUP BY 1,2", sid, cutoff);
+        List<RunInfo> leafCandidates = new List<RunInfo>();
+        string leaf = CanonicalUiModel(uiModel);
+        for (int i = 0; i < rows.Length; i++)
+        {
+            string raw = S(rows[i][0]) ?? "";
+            string prov = S(rows[i][1]) ?? "";
+            string canonical = CanonicalMessageModel(raw, prov);
+            RunInfo candidate = new RunInfo();
+            candidate.Model = canonical; candidate.Prov = prov; candidate.Started = L(rows[i][2]);
+            bool exact = raw == uiModel || canonical == uiModel;
+            bool providerOk = uiProvider.Length == 0 || prov == uiProvider;
+            if (exact && providerOk) return candidate;
+            if (leaf.Length > 0 && canonical == leaf && providerOk)
+            {
+                bool duplicate = false;
+                for (int j = 0; j < leafCandidates.Count; j++)
+                    if (leafCandidates[j].Model == candidate.Model
+                        && leafCandidates[j].Prov == candidate.Prov) duplicate = true;
+                if (!duplicate) leafCandidates.Add(candidate);
+            }
+        }
+        if (leafCandidates.Count == 1) return leafCandidates[0];
+        if (leaf.Length == 0 && rows.Length == 1)
+        {
+            RunInfo only = new RunInfo();
+            only.Model = CanonicalMessageModel(S(rows[0][0]), S(rows[0][1]));
+            only.Prov = S(rows[0][1]) ?? ""; only.Started = L(rows[0][2]);
+            return only;
+        }
+        return null;
+    }
+
+    static bool SessionLatestModelMatches(string sid, string model, string provider)
+    {
+        if (String.IsNullOrEmpty(sid) || String.IsNullOrEmpty(model)) return false;
+        object[][] r = Query("SELECT COALESCE(json_extract(data,'$.modelId'), "
+            + "json_extract(data,'$.modelID')), COALESCE(json_extract(data,'$.providerId'), "
+            + "json_extract(data,'$.providerID')) FROM message WHERE session_id=? "
+            + "AND json_extract(data,'$.role')='assistant' ORDER BY time_updated DESC LIMIT 1", sid);
+        if (r.Length == 0) return false;
+        string p = S(r[0][1]) ?? "";
+        return CanonicalMessageModel(S(r[0][0]), p) == model
+            && (provider.Length == 0 || p == provider);
+    }
+
+    static bool SessionHasAnyRunningRequest(string sid)
     {
         if (String.IsNullOrEmpty(sid) || DbH == IntPtr.Zero) return false;
         long cutoff = UnixMs() - 30 * 60 * 1000L;
-        string q = "SELECT 1 FROM message m WHERE m.session_id=? "
-            + "AND json_extract(m.data,'$.role')='assistant' "
-            + "AND m.time_created>=? "
-            + "AND (json_extract(m.data,'$.finish') IS NULL "
-            + "OR json_extract(m.data,'$.finish')='started') "
-            + "AND NOT EXISTS (SELECT 1 FROM model_usage u "
-            + "WHERE u.id LIKE '%' || m.id || '%') ";
-        object[] args;
-        if (!String.IsNullOrEmpty(modelId))
-        {
-            q += "AND COALESCE(json_extract(m.data,'$.modelId'), "
-                + "json_extract(m.data,'$.modelID'))=? ";
-            args = new object[] { sid, cutoff, modelId };
-        }
-        else args = new object[] { sid, cutoff };
-        q += "LIMIT 1";
-        return Query(q, args).Length > 0;
+        return Query("SELECT 1 FROM message m WHERE m.session_id=? "
+            + "AND json_extract(m.data,'$.role')='assistant' AND m.time_created>=? "
+            + "AND (json_extract(m.data,'$.finish') IS NULL OR json_extract(m.data,'$.finish')='started') "
+            + "AND NOT EXISTS (SELECT 1 FROM model_usage u WHERE u.assistant_message_id=m.id "
+            + "OR u.id LIKE '%' || m.id || '%') LIMIT 1", sid, cutoff).Length > 0;
+    }
+
+    static bool SessionHasRunningRequest(string sid, string modelId)
+    {
+        return RunningModelForSession(sid, modelId, "") != null;
     }
 
     // ================= UIA（对照 token_watcher.cs 逻辑） =================
@@ -370,13 +430,13 @@ class TDN
     static int LastWalkMs, LastReadTc;
     static DateTime LastWalk = DateTime.MinValue;
     // watcher 输出槽位（原 stdout 协议 → 字段）
-    static string CurTitle = "", CurModel = "";
+    static string CurTitle = "", CurModel = "", CurProvider = "";
     static int[] CurAnchor;   // 屏幕物理像素 [l,t,w,h]
     // binder 粘滞槽位（对照 overlay_bind_loop）
     static int LastDbChgTc;   // 最近 DB/UI 变化（rowid/标题/模型）tick，驱动自适应轮询
     static long LastMuChk = -1, LastPrChk = -1;
     static string LastTiChk, LastMoChk;
-    static string LastTitle = "", LastModel = "";
+    static string LastTitle = "", LastModel = "", LastProvider = "";
     static double TitleEmptySince;
     static bool EverAnchored;
     static int[] OverlayAnchor;
@@ -384,19 +444,40 @@ class TDN
     // ^[^/\s]+/[^/\s]+$ ：provider/model 格式（避免引正则引擎）
     static bool IsModelName(string s)
     {
-        int slash = -1;
+        if (String.IsNullOrEmpty(s)) return false;
+        int slash = s.IndexOf('/');
+        if (slash <= 0 || slash >= s.Length - 1) return false;
         for (int i = 0; i < s.Length; i++)
+            if (char.IsWhiteSpace(s[i])) return false;
+        return true;
+    }
+    static string CanonicalUiModel(string s)
+    {
+        if (String.IsNullOrEmpty(s)) return "";
+        int slash = s.IndexOf('/');
+        return (slash >= 0 ? s.Substring(slash + 1) : s).Trim();
+    }
+    static string CanonicalMessageModel(string model, string provider)
+    {
+        if (String.IsNullOrEmpty(model)) return "";
+        if (!String.IsNullOrEmpty(provider))
         {
-            char c = s[i];
-            if (c == '/') { if (slash >= 0) return false; slash = i; }
-            else if (char.IsWhiteSpace(c)) return false;
+            string prefix = provider + "/";
+            if (model.StartsWith(prefix, StringComparison.Ordinal))
+                return model.Substring(prefix.Length).Trim();
         }
-        return slash > 0 && slash < s.Length - 1;
+        return model.Trim();
+    }
+    static string ProviderFromUiModel(string s)
+    {
+        if (String.IsNullOrEmpty(s)) return "";
+        int slash = s.IndexOf('/');
+        return slash > 0 ? s.Substring(0, slash).Trim() : "";
     }
     static string StripModel(string s)
     {
-        int i = s.LastIndexOf('/');
-        return i >= 0 ? s.Substring(i + 1) : s;
+        // UIA button is provider/model; model itself may contain additional '/'.
+        return CanonicalUiModel(s);
     }
 
     // 窗口发现缓存：EnumWindows 全遍历不能每 tick 跑（CPU 热点），2s 有效期 + 失效即重找
@@ -488,14 +569,15 @@ class TDN
         }
         else ClearRefs();
         CurTitle = title ?? "";
-        CurModel = StripModel(model);
+        CurProvider = ProviderFromUiModel(model);
+        CurModel = CanonicalUiModel(model);
         CurAnchor = anchor;
     }
 
     static void UiaFail()
     {
         UiaRoot = null; ClearRefs();
-        CurTitle = ""; CurModel = ""; CurAnchor = null;
+        CurTitle = ""; CurModel = ""; CurProvider = ""; CurAnchor = null;
     }
 
     static void UiaTick()
@@ -528,7 +610,9 @@ class TDN
                     System.Windows.Rect ar = AnchorEl.Current.BoundingRectangle;
                     CurAnchor = new int[] { (int)ar.Left, (int)ar.Top, (int)ar.Width, (int)ar.Height };
                     CurTitle = TitleEl.Current.Name ?? "";
-                    CurModel = ModelEl != null ? StripModel(ModelEl.Current.Name ?? "") : "";
+                    string rawModel = ModelEl != null ? (ModelEl.Current.Name ?? "") : "";
+                    CurProvider = ProviderFromUiModel(rawModel);
+                    CurModel = CanonicalUiModel(rawModel);
                 }
                 catch { UiaFail(); }   // 元素被重渲染换掉 → 立即重走
             }
@@ -558,7 +642,7 @@ class TDN
         if (DbH == IntPtr.Zero) return;
         try
         {
-            string title, model;
+            string title, model, provider;
             if (CurAnchor != null)
             {
                 OverlayAnchor = CurAnchor;
@@ -584,11 +668,13 @@ class TDN
                 }
                 title = t;
                 model = CurModel.Length > 0 ? CurModel : LastModel;
+                provider = CurProvider.Length > 0 ? CurProvider : LastProvider;
                 if (CurModel.Length > 0) LastModel = CurModel;
+                if (CurProvider.Length > 0) LastProvider = CurProvider;
             }
             else
             {
-                title = LastTitle; model = LastModel;   // watcher 全空沿用健康值
+                title = LastTitle; model = LastModel; provider = LastProvider;   // watcher 全空沿用健康值
             }
 
             object[][] m1 = Query("SELECT MAX(rowid) FROM model_usage");
@@ -601,49 +687,50 @@ class TDN
                 LastDbChgTc = Environment.TickCount;
                 LastMuChk = mu; LastPrChk = pr; LastTiChk = title; LastMoChk = model;
             }
-            object[] key = new object[] { title, model, mu, pr, (long)(nowS / 10) };
+            object[] key = new object[] { title, model, provider, mu, pr, (long)(nowS / 10) };
             if (LastKey != null && KeyEq(key, LastKey)) return;
             PDirty++;
 
             string sid = FindSessionByTitle(title);
             if (sid.Length == 0 && !EverAnchored) sid = FallbackSession(UnixMs());   // 仅冷启动
-            ModelAgg[] models = SessionSpeed(sid, model);
-            // 模型读数校验：hint 在会话无任何完成记录 → 读数不可信，回退最近模型
-            if (models.Length == 0 && model.Length > 0)
+            RunInfo activeRun = RunningModelForSession(sid, model, provider);
+            bool confirmedRun = activeRun != null;
+            string historyModel = confirmedRun ? activeRun.Model : model;
+            string historyProvider = confirmedRun ? activeRun.Prov : provider;
+            ModelAgg[] models = SessionSpeed(sid, historyModel, historyProvider);
+            // 模型提示可能被弹层旧值污染；只有没有可确认的运行模型时才允许旧回退。
+            if (models.Length == 0 && model.Length > 0 && !confirmedRun)
             {
-                models = SessionSpeed(sid, "");
+                if (!SessionHasAnyRunningRequest(sid))
+                    models = SessionSpeed(sid, "", "");
                 if (models.Length > 0 && nowS - LastHintLog > 60)
                 {
                     LastHintLog = nowS;
                     ErrLog("bind-zero", "model hint '" + model + "' 在会话无完成记录，回退最近模型");
                 }
             }
+            if (confirmedRun && models.Length == 0)
+            {
+                // 已确认当前模型在运行，但没有该模型可验证的完成历史：保持 0，
+                // 禁止沿用同会话其他模型速度。
+                models = new ModelAgg[0];
+            }
             string reason = "";
             if (models.Length > 0)
             {
                 long lastDone = models[0].Last;
                 long nowMs = (long)(nowS * 1000);
-                if (lastDone < nowMs - 90 * 1000)
+                if (lastDone < nowMs - 90 * 1000 && !confirmedRun)
                 {
                     long act = SessionLastAct(sid);
                     if (act < nowMs - 90 * 1000)
                     {
-                        bool running = false;
-                        // models 中保存的是数据库完整 model_id；不要用 UIA 的短展示名匹配。
-                        for (int i = 0; i < models.Length; i++)
-                        {
-                            if (SessionHasRunningRequest(sid, models[i].Model))
-                            { running = true; break; }
-                        }
-                        if (!running)
-                        {
-                            reason = string.Format("90s空闲归零 sid={0} 最近完成{1}s前 part活动{2}s前",
-                                sid, (nowMs - lastDone) / 1000, (nowMs - act) / 1000);
-                            models = new ModelAgg[0];
-                        }
+                        reason = string.Format("90s空闲归零 sid={0} 最近完成{1}s前 part活动{2}s前",
+                            sid, (nowMs - lastDone) / 1000, (nowMs - act) / 1000);
+                        models = new ModelAgg[0];
                     }
                 }
-                LastKey = key;   // 与 Python 一致：有数据（含归零）才更新脏标记
+                LastKey = key;
             }
             else if (title.Length == 0)
                 reason = "标题空（UIA 读不到超TTL）model=" + model;

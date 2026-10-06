@@ -14,4 +14,6 @@
 2. 新增按 session/model 判断未结束 assistant 请求的只读 helper，只保护已有历史速度。
 3. 30 分钟僵尸窗口、finish+usage 结束条件和真正空闲归零保持不变。
 4. 首次 UIA 空标题沿用健康标题，超过 TTL 仍清空，避免旧会话速度长期残留。
-5. 临时 harness 四场景全部通过；真实桌面 overlay 可见性和日志回归完成。透明分层窗口的 PrintWindow 文字像素断言因系统限制保留未验证标记。
+- 后续模型身份复核发现真实库中存在 provider 前缀/裸模型历史记录；直接按 raw `model_id` 判断会漏匹配，按叶名盲猜又可能串模型。最终采用 session-scoped 活动模型解析：优先 raw/provider 精确匹配，叶名仅在候选唯一时接受；当前模型无可验证历史时禁止同会话其他模型 fallback。
+- `assistant_message_id` 直接关联的 completed usage 与 message 模型字段在抽样中一致，因此 canonical 历史匹配不自动把无关联的 legacy full-name 消息映射到裸模型历史。
+- 模型身份修复已编译并通过最终回归：provider 前缀活动模型映射裸历史、真正空闲归零、同会话另一模型不继承历史，全部 PASS；临时 harness 已清理。
