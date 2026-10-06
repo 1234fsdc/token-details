@@ -2,6 +2,8 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Token Details · 详情面板风格预览</title>
 <style>
@@ -141,7 +143,7 @@
     transition: background-color .15s, color .15s;
   }
   .close-btn:hover { color: var(--close-ink, var(--win-ink)); background: var(--close-bg, var(--hover-bg)); }
-  .source-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 3px 12px 10px; }
+  .source-tabs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; padding: 3px 12px 10px; }
   .source-tab {
     min-height: 44px; padding: 7px 8px; border: 0; background: transparent;
     color: var(--win-muted); font-size: 12px; border-radius: var(--control-radius, 2px);
@@ -242,16 +244,6 @@
   }
   .bar.peak { background: var(--hot); }
   .bar-label { color: var(--win-muted); font: 10px Consolas, monospace; text-align: center; }
-
-  .compare-row { grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, .8fr) auto; }
-  .compare-cell {
-    min-width: 0; color: var(--win-ink);
-    font: 700 11px/1.3 Consolas, "Cascadia Mono", monospace;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .compare-cell.z { color: var(--zcode); }
-  .compare-cell.c { color: var(--codex); }
-  .compare-cell.delta { color: var(--hot); text-align: right; }
 
   .about {
     padding: 24px 24px 26px; background: var(--studio-panel);
@@ -617,7 +609,7 @@
         <button class="control" data-state="long" data-active="false">长标题</button>
         <button class="control" data-state="empty" data-active="false">空态</button>
         <button class="control" data-state="codex" data-active="false">Codex 样本</button>
-        <span class="hint">快捷键 1/2/3 切页 · 4/5/6 切来源 · 点数据行展开明细 · CRT 风格可输命令（help）</span>
+        <span class="hint">快捷键 1/2/3 切页 · 4/5 切来源 · 点数据行展开明细 · CRT 风格可输命令（help）</span>
       </div>
     </header>
 
@@ -638,7 +630,6 @@
               <div class="source-tabs" role="tablist" aria-label="数据来源">
                 <button class="source-tab" data-source="zcode" role="tab" aria-selected="true">ZCode</button>
                 <button class="source-tab" data-source="codex" role="tab" aria-selected="false">Codex</button>
-                <button class="source-tab" data-source="compare" role="tab" aria-selected="false">对比</button>
               </div>
               <div class="cmd-bar">
                 <span class="cmd-prompt">td&nbsp;&gt;</span>
@@ -728,10 +719,9 @@
   let state = { theme: "brutal", page: "overview", source: "zcode", mode: "live", closed: false };
   const $ = (s) => document.querySelector(s);
   const win = $("#detailWindow"), content = $("#content"), reopen = $("#reopen");
-  const sourceLabel = (source) => source === "zcode" ? "ZCode" : source === "codex" ? "Codex" : "对比";
+  const sourceLabel = (source) => source === "codex" ? "Codex" : "ZCode";
   const currentData = () => {
     if (state.mode === "empty") return { sum: { requests: "0 次", speed: "0.0 t/s", tokens: "0", rpm: "0.0 次/分", ttft: "-", io: "0 / 0" }, models: [], sessions: [], totals: [], days: [0,0,0,0,0,0,0] };
-    if (state.source === "compare") return base.zcode;
     const d = base[state.source] || base.zcode;
     if (state.mode === "long" && state.source === "zcode") return { ...d, ...longPatch };
     return d;
@@ -745,10 +735,6 @@
   const chart = (days) => {
     const max = Math.max(...days);
     return `<div class="chart">${days.map((v,i) => `<div class="bar-col"><div class="bar ${v === max && v > 0 ? "peak" : ""}" style="--height:${Math.max(3,v)}%"></div><span class="bar-label">${["-6","-5","-4","-3","-2","-1","今"][i]}</span></div>`).join("")}</div>`;
-  };
-  const compareRows = () => {
-    const merged = [["gpt-6-astra", "26.0", "—", "ZCode +26.0"], ["gpt-5.6-verify", "—", "31.7", "Codex +31.7"], ["inclusionai/ling-3.1-flash", "85.8", "—", "ZCode +85.8"]];
-    return merged.map(r => `<article class="data-row compare-row k-red"><span class="row-name">${escapeHtml(r[0])}</span><span class="compare-cell z">${r[1]} t/s</span><span class="compare-cell c">${r[2]} t/s</span><span class="compare-cell delta">${escapeHtml(r[3])}</span></article>`).join("");
   };
   function render() {
     const d = currentData();
@@ -765,16 +751,16 @@
     document.querySelectorAll(".source-tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.source === state.source)));
     document.querySelectorAll(".control[data-state]").forEach(b => b.dataset.active = String(b.dataset.state === state.mode));
     if (state.page === "overview") {
-      const modelBody = state.mode === "empty" ? empty("今日暂无数据") : state.source === "compare" ? compareRows() : (d.models.length ? list(d.models) : empty("今日暂无数据"));
-      content.innerHTML = kpis([["今日请求", d.sum.requests], ["平均速度", d.sum.speed], ["今日 TOKENS", d.sum.tokens]]) + section("每模型速度 · 今日", state.source === "compare" ? "对比预览" : sourceLabel(state.source), modelBody) + section("活跃会话 · 30 分钟窗口", "", d.sessions.length ? list(d.sessions) : empty("30 分钟内无活动会话"));
+      const modelBody = state.mode === "empty" ? empty("今日暂无数据") : (d.models.length ? list(d.models) : empty("今日暂无数据"));
+      content.innerHTML = kpis([["今日请求", d.sum.requests], ["平均速度", d.sum.speed], ["今日 TOKENS", d.sum.tokens]]) + section("每模型速度 · 今日", sourceLabel(state.source), modelBody) + section("活跃会话 · 30 分钟窗口", "", d.sessions.length ? list(d.sessions) : empty("30 分钟内无活动会话"));
     } else if (state.page === "speed") {
-      const modelBody = state.mode === "empty" ? empty("今日暂无数据") : state.source === "compare" ? compareRows() : (d.models.length ? list(d.models) : empty("今日暂无数据"));
+      const modelBody = state.mode === "empty" ? empty("今日暂无数据") : (d.models.length ? list(d.models) : empty("今日暂无数据"));
       content.innerHTML = kpis([["平均 Token 速度", d.sum.speed], ["平均请求速度", d.sum.rpm], ["平均首字速度", d.sum.ttft]]) + section("每模型速度 · 今日", "最近 8 条加权", modelBody) + section("会话速度 · 30 分钟窗口", "", d.sessions.length ? list(d.sessions) : empty("30 分钟内无活动会话"));
     } else {
-      const modelBody = state.mode === "empty" ? empty("今日暂无数据") : state.source === "compare" ? compareRows() : (d.totals.length ? list(d.totals) : empty("今日暂无数据"));
+      const modelBody = state.mode === "empty" ? empty("今日暂无数据") : (d.totals.length ? list(d.totals) : empty("今日暂无数据"));
       const sessionBody = d.sessions.length ? list(d.sessions) : empty("今日暂无数据");
       const compressionBody = d.sessions.length ? list([["90分钟后复测 native 长跑内存", "1 次 · 10-06 01:28", "", "red", 0]]) : empty("30 天内无压缩会话");
-      content.innerHTML = kpis([["今日 TOKENS", d.sum.tokens], ["今日请求", d.sum.requests], ["输入 / 输出", d.sum.io]]) + section("按模型 · 今日", state.source === "compare" ? "ZCode / Codex" : "", modelBody) + section("按会话 · 今日", "", sessionBody) + section("会话压缩 · 30 天内 1 次", "", compressionBody) + (d.days.some(Boolean) ? section("近 7 日 token", "", chart(d.days)) : "");
+      content.innerHTML = kpis([["今日 TOKENS", d.sum.tokens], ["今日请求", d.sum.requests], ["输入 / 输出", d.sum.io]]) + section("按模型 · 今日", "", modelBody) + section("按会话 · 今日", "", sessionBody) + section("会话压缩 · 30 天内 1 次", "", compressionBody) + (d.days.some(Boolean) ? section("近 7 日 token", "", chart(d.days)) : "");
     }
   }
   document.querySelectorAll(".theme-choice").forEach(b => b.addEventListener("click", () => { state.theme = b.dataset.theme; render(); }));
@@ -800,9 +786,9 @@
     }
   });
 
-  // 键盘快捷键：1/2/3 切页，4/5/6 切来源
+  // 键盘快捷键：1/2/3 切页，4/5 切来源
   const pageKeys = { "1": "overview", "2": "speed", "3": "total" };
-  const sourceKeys = { "4": "zcode", "5": "codex", "6": "compare" };
+  const sourceKeys = { "4": "zcode", "5": "codex" };
   document.addEventListener("keydown", (e) => {
     if (e.target.matches("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
     if (pageKeys[e.key]) { state.page = pageKeys[e.key]; render(); content.scrollTop = 0; }
@@ -819,15 +805,15 @@
     if (!raw) return;
     const [cmd, arg] = raw.split(/\s+/);
     const c = cmd.toLowerCase();
-    if (c === "help") say("page 1|2|3 · src z|c|x · state live|long|empty|codex · theme b|s|t|m · clear");
+    if (c === "help") say("page 1|2|3 · src z|c · state live|long|empty|codex · theme b|s|t|m · clear");
     else if (c === "page" || c === "p") {
       const map = { "1": "overview", "2": "speed", "3": "total", overview: "overview", speed: "speed", total: "total" };
       if (map[(arg || "").toLowerCase()]) { state.page = map[arg.toLowerCase()]; render(); content.scrollTop = 0; say("→ " + state.page); }
       else say("page: 需要 1|2|3 或 overview|speed|total", true);
     } else if (c === "src" || c === "s") {
-      const map = { z: "zcode", zcode: "zcode", c: "codex", codex: "codex", x: "compare", compare: "compare" };
+      const map = { z: "zcode", zcode: "zcode", c: "codex", codex: "codex" };
       if (map[(arg || "").toLowerCase()]) { state.source = map[arg.toLowerCase()]; render(); content.scrollTop = 0; say("→ " + state.source); }
-      else say("src: 需要 z|c|x", true);
+      else say("src: 需要 z|c", true);
     } else if (c === "state") {
       const map = { live: "live", long: "long", empty: "empty", codex: "codex" };
       if (map[(arg || "").toLowerCase()]) { state.mode = map[arg.toLowerCase()]; if (state.mode === "codex") state.source = "codex"; render(); content.scrollTop = 0; say("→ " + state.mode); }
