@@ -453,7 +453,7 @@
   .theme-porcelain .section-title span { color: #26282c; }
   .theme-porcelain .bar.peak { background: #155f47; }
 
-  /* ============ 结构层：跑马灯 / 命令行 / 表头 ============ */
+  /* ============ 结构层：跑马灯 / 表头 ============ */
   .ticker { display: none; }
   .theme-onyx .ticker {
     display: block; overflow: hidden; white-space: nowrap;
@@ -463,24 +463,6 @@
   .ticker-inner { display: inline-flex; animation: ticker-run 30s linear infinite; }
   .ticker-inner > span { padding-right: 52px; font: 500 10px/1 "Segoe UI", sans-serif; text-transform: uppercase; letter-spacing: .3em; color: #cdb98f; }
   @keyframes ticker-run { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-
-  .cmd-bar { display: none; }
-  .theme-titan .cmd-bar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 14px 10px; border-top: 1px solid rgba(37,99,160,.2); background: #f6f8fa;
-  }
-  .cmd-prompt { color: #2563a0; font: 600 12px/1 "Cascadia Mono", Consolas, monospace; flex: 0 0 auto; }
-  .cmd-input {
-    flex: 1 1 auto; min-width: 0; min-height: 34px;
-    border: 0; border-bottom: 1px solid rgba(37,99,160,.3);
-    background: transparent; color: #1b222b;
-    font: 12px "Cascadia Mono", Consolas, monospace; caret-color: #2563a0; padding: 6px 4px;
-    transition: border-color .18s;
-  }
-  .cmd-input:focus { outline: none; border-bottom-color: #2563a0; }
-  .cmd-input::placeholder { color: #93a0b0; letter-spacing: .04em; }
-  .cmd-out { flex: 0 1 auto; min-width: 0; max-width: 46%; font: 11px "Cascadia Mono", Consolas, monospace; color: #b8791d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cmd-out.err { color: #c2453a; }
 
   .col-head { display: none; }
   .theme-ivory .col-head {
@@ -567,14 +549,14 @@
       <div>
         <div class="stage-no" id="stageNo">DIRECTION 03 / 04</div>
         <h2 class="stage-title" id="themeTitle">Titan White<span class="cn" id="themeTitleCn">钛白</span></h2>
-        <p class="stage-subtitle" id="themeSubtitle">白底配钢蓝细线，等宽数字与命令行，仪器般精确。</p>
+        <p class="stage-subtitle" id="themeSubtitle">白底配钢蓝细线，等宽数字，仪器般精确。</p>
       </div>
       <div class="stage-actions" aria-label="预览状态控制">
         <button class="control" data-state="live" data-active="true">正常数据</button>
         <button class="control" data-state="long" data-active="false">长标题</button>
         <button class="control" data-state="empty" data-active="false">空态</button>
         <button class="control" data-state="codex" data-active="false">Codex 样本</button>
-        <span class="hint">快捷键 1/2/3 切页 · 4/5 切来源 · 点数据行展开明细 · 钛白风格可输命令（help）</span>
+        <span class="hint">快捷键 1/2/3 切页 · 4/5 切来源 · 点数据行展开明细</span>
       </div>
     </header>
 
@@ -595,11 +577,6 @@
               <div class="source-tabs" role="tablist" aria-label="数据来源">
                 <button class="source-tab" data-source="zcode" role="tab" aria-selected="true">ZCode</button>
                 <button class="source-tab" data-source="codex" role="tab" aria-selected="false">Codex</button>
-              </div>
-              <div class="cmd-bar">
-                <span class="cmd-prompt">td&nbsp;&gt;</span>
-                <input class="cmd-input" id="cmdInput" type="text" placeholder="help · page speed · src codex · state empty" aria-label="终端命令输入" autocomplete="off" spellcheck="false">
-                <span class="cmd-out" id="cmdOut" role="status"></span>
               </div>
             </header>
             <div class="window-content" id="content" tabindex="0"></div>
@@ -637,9 +614,9 @@
     },
     titan: {
       no: "DIRECTION 03 / 04", title: "Titan White", titleCn: "钛白",
-      subtitle: "白底配钢蓝细线，等宽数字与命令行，仪器般精确。",
-      about: "钛白走精密仪器路线：白底干净，等宽数字对齐、钢蓝点缀、底部可输命令行。",
-      density: "等宽行距均匀，数字列最工整。", fit: "夜间之外的所有场景，亮色桌面。", cost: "中：等宽排版与命令行交互需一并移植。"
+      subtitle: "白底配钢蓝细线，等宽数字，仪器般精确。",
+      about: "钛白走精密仪器路线：白底干净，等宽数字对齐、钢蓝点缀，克制而精确。",
+      density: "等宽行距均匀，数字列最工整。", fit: "亮色桌面，长时间查看也不累。", cost: "中：等宽排版与颜色体系需整体移植。"
     },
     porcelain: {
       no: "DIRECTION 04 / 04", title: "Porcelain", titleCn: "瓷白",
@@ -766,43 +743,12 @@
     else if (sourceKeys[e.key]) { state.source = sourceKeys[e.key]; render(); content.scrollTop = 0; }
   });
 
-  // 命令行（钛白风格可见，逻辑全局生效）
-  const cmdInput = $("#cmdInput"), cmdOut = $("#cmdOut");
-  const say = (msg, err) => { cmdOut.textContent = msg; cmdOut.classList.toggle("err", !!err); };
-  cmdInput.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
-    const raw = cmdInput.value.trim();
-    cmdInput.value = "";
-    if (!raw) return;
-    const [cmd, arg] = raw.split(/\s+/);
-    const c = cmd.toLowerCase();
-    if (c === "help") say("page 1|2|3 · src z|c · state live|long|empty|codex · theme o|i|t|p · clear");
-    else if (c === "page" || c === "p") {
-      const map = { "1": "overview", "2": "speed", "3": "total", overview: "overview", speed: "speed", total: "total" };
-      if (map[(arg || "").toLowerCase()]) { state.page = map[arg.toLowerCase()]; render(); content.scrollTop = 0; say("→ " + state.page); }
-      else say("page: 需要 1|2|3 或 overview|speed|total", true);
-    } else if (c === "src" || c === "s") {
-      const map = { z: "zcode", zcode: "zcode", c: "codex", codex: "codex" };
-      if (map[(arg || "").toLowerCase()]) { state.source = map[arg.toLowerCase()]; render(); content.scrollTop = 0; say("→ " + state.source); }
-      else say("src: 需要 z|c", true);
-    } else if (c === "state") {
-      const map = { live: "live", long: "long", empty: "empty", codex: "codex" };
-      if (map[(arg || "").toLowerCase()]) { state.mode = map[arg.toLowerCase()]; if (state.mode === "codex") state.source = "codex"; render(); content.scrollTop = 0; say("→ " + state.mode); }
-      else say("state: 需要 live|long|empty|codex", true);
-    } else if (c === "theme" || c === "t") {
-      const map = { o: "onyx", i: "ivory", t: "titan", p: "porcelain" };
-      if (map[(arg || "").toLowerCase()]) { state.theme = map[arg.toLowerCase()]; render(); say("→ " + state.theme); }
-      else say("theme: 需要 o|i|t|p", true);
-    } else if (c === "clear" || c === "cls") say("");
-    else say("未知命令: " + cmd + " (help 查看)", true);
-  });
-
   // 头部任意位置拖拽（画布内移动 + 边界夹紧）
   let drag = null;
   let dragOffset = { x: 0, y: 0 };
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   $("#dragHandle").addEventListener("pointerdown", (e) => {
-    if (e.target.closest("button, input")) return;
+    if (e.target.closest("button")) return;
     const canvasRect = $("#canvas").getBoundingClientRect();
     const windowRect = win.getBoundingClientRect();
     drag = { id: e.pointerId, x: e.clientX, y: e.clientY, baseX: dragOffset.x, baseY: dragOffset.y, canvasRect, windowRect, active: false };
