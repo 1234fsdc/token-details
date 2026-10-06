@@ -34,7 +34,7 @@
   }
   body[data-theme="onyx"]      { --stage-accent: #e0b84b; --canvas-bg: #211c14; }
   body[data-theme="ivory"]     { --stage-accent: #b98a2e; --canvas-bg: #edeae2; --canvas-ink: #c9c3b6; }
-  body[data-theme="titan"]     { --stage-accent: #7fa8cf; --canvas-bg: #191d24; }
+  body[data-theme="titan"]     { --stage-accent: #2563a0; --canvas-bg: #eef1f5; --canvas-ink: #c9d1da; }
   body[data-theme="porcelain"] { --stage-accent: #155f47; --canvas-bg: #edf0ee; --canvas-ink: #c6ccc8; }
   button { font: inherit; cursor: pointer; }
   button:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--stage-accent); outline-offset: 3px; }
@@ -364,47 +364,47 @@
   .theme-ivory .section-title span { color: #1c1917; }
   .theme-ivory .row-name:hover { color: #b98a2e; }
 
-  /* ============ 03 · TITAN GREY 钛灰 ============ */
+  /* ============ 03 · TITAN WHITE 钛白 ============ */
   .theme-titan {
-    --win-bg: #15181d; --header-bg: #101318; --win-ink: #e4e9f0; --win-muted: #8b96a5;
-    --win-line: rgba(127,168,207,.18);
-    --selected-bg: rgba(127,168,207,.16); --sel-ink: #a5c6e4;
-    --hover-bg: rgba(127,168,207,.07);
-    --scroll-thumb: rgba(127,168,207,.45);
-    --hot: #e2b25c; --bad: #e08078; --warn: #e2b25c; --ok: #7cc6a8;
-    --win-border: 1px solid rgba(127,168,207,.28); --win-radius: 8px;
-    --win-shadow: 0 30px 65px rgba(0,0,0,.6);
-    --header-border: 1px solid rgba(127,168,207,.2);
+    --win-bg: #ffffff; --header-bg: #f6f8fa; --win-ink: #1b222b; --win-muted: #66717f;
+    --win-line: rgba(37,99,160,.16);
+    --selected-bg: rgba(37,99,160,.1); --sel-ink: #1f5fa8;
+    --hover-bg: rgba(37,99,160,.05);
+    --scroll-thumb: rgba(37,99,160,.4);
+    --hot: #b8791d; --bad: #c2453a; --warn: #b8791d; --ok: #1e7a56;
+    --win-border: 1px solid rgba(37,99,160,.28); --win-radius: 8px;
+    --win-shadow: 0 26px 60px rgba(27,34,43,.2);
+    --header-border: 1px solid rgba(37,99,160,.18);
     --control-radius: 6px; --tab-gap: 3px; --tab-track: .12em;
     --font-ui: "Segoe UI", "Microsoft YaHei UI", sans-serif;
     --font-tab: "Cascadia Mono", Consolas, "Segoe UI", monospace;
-    --date-color: #7fa8cf; --close-bg: rgba(224,128,120,.16); --close-ink: #e08078;
+    --date-color: #2563a0; --close-bg: rgba(194,69,58,.1); --close-ink: #c2453a;
     --content-pad: 16px 15px 26px;
-    --kpi-pb: 16px; --kpi-mb: 6px; --kpi-border: 1px solid rgba(127,168,207,.16);
-    --kpi-gap: 12px; --kpi-rule: 1px solid rgba(127,168,207,.16);
+    --kpi-pb: 16px; --kpi-mb: 6px; --kpi-border: 1px solid rgba(37,99,160,.16);
+    --kpi-gap: 12px; --kpi-rule: 1px solid rgba(37,99,160,.16);
     --kpi-label-track: .16em; --kpi-label-font: 500 9px/1.5 "Cascadia Mono", Consolas, monospace;
     --kpi-font: 600 24px/1.15 "Cascadia Mono", Consolas, monospace;
-    --kpi-color: #e4e9f0; --kpi-vmt: 6px;
-    --section-mt: 22px; --st-mb: 10px; --st-color: #7fa8cf;
+    --kpi-color: #1b222b; --kpi-vmt: 6px;
+    --section-mt: 22px; --st-mb: 10px; --st-color: #2563a0;
     --st-font: 500 10px/1.4 "Cascadia Mono", Consolas, monospace; --st-track: .2em;
-    --st-rule: rgba(127,168,207,.25); --st-rule-h: 1px;
+    --st-rule: rgba(37,99,160,.28); --st-rule-h: 1px;
     --row-gap: 0; --row-h: 50px; --row-pad: 9px 6px 11px;
-    --row-border: 1px solid rgba(127,168,207,.12); --row-col-gap: 10px;
-    --bar-h: 2px; --bar-bottom: 0; --bar-mute: rgba(127,168,207,.4); --bar-radius: 1px;
+    --row-border: 1px solid rgba(37,99,160,.12); --row-col-gap: 10px;
+    --bar-h: 2px; --bar-bottom: 0; --bar-mute: rgba(37,99,160,.35); --bar-radius: 1px;
     --name-font: 600 13px/1.4 "Segoe UI", sans-serif;
     --meta-font: 400 10px/1.5 "Cascadia Mono", Consolas, monospace;
     --value-font: 600 16px/1 "Cascadia Mono", Consolas, monospace;
-    --value-color: var(--bar-color, #e4e9f0);
-    --empty-border: 1px dashed rgba(127,168,207,.3);
-    --zcode: #7fa8cf; --codex: #e2b25c;
+    --value-color: var(--bar-color, #1b222b);
+    --empty-border: 1px dashed rgba(37,99,160,.35);
+    --zcode: #2563a0; --codex: #b8791d;
   }
   .theme-titan .page-tab { text-transform: uppercase; font-size: 12px; }
-  .theme-titan .page-tab[aria-selected="true"] { box-shadow: inset 0 -2px #7fa8cf; background: transparent; }
-  .theme-titan .source-tab { border-color: rgba(127,168,207,.3); }
-  .theme-titan .source-tab[aria-selected="true"] { background: rgba(127,168,207,.16); color: #a5c6e4; border-color: rgba(127,168,207,.5); }
+  .theme-titan .page-tab[aria-selected="true"] { box-shadow: inset 0 -2px #2563a0; background: transparent; }
+  .theme-titan .source-tab { border-color: rgba(37,99,160,.3); }
+  .theme-titan .source-tab[aria-selected="true"] { background: rgba(37,99,160,.1); color: #1f5fa8; border-color: rgba(37,99,160,.5); }
   .theme-titan .data-row { border-left: 2px solid transparent; padding-left: 8px; }
-  .theme-titan .data-row:hover { border-left-color: #7fa8cf; }
-  .theme-titan .bar.peak { background: #e2b25c; }
+  .theme-titan .data-row:hover { border-left-color: #2563a0; }
+  .theme-titan .bar.peak { background: #b8791d; }
 
   /* ============ 04 · PORCELAIN 瓷白 ============ */
   .theme-porcelain {
@@ -463,20 +463,20 @@
   .cmd-bar { display: none; }
   .theme-titan .cmd-bar {
     display: flex; align-items: center; gap: 8px;
-    padding: 8px 14px 10px; border-top: 1px solid rgba(127,168,207,.2); background: #0e1116;
+    padding: 8px 14px 10px; border-top: 1px solid rgba(37,99,160,.2); background: #f6f8fa;
   }
-  .cmd-prompt { color: #7fa8cf; font: 600 12px/1 "Cascadia Mono", Consolas, monospace; flex: 0 0 auto; }
+  .cmd-prompt { color: #2563a0; font: 600 12px/1 "Cascadia Mono", Consolas, monospace; flex: 0 0 auto; }
   .cmd-input {
     flex: 1 1 auto; min-width: 0; min-height: 34px;
-    border: 0; border-bottom: 1px solid rgba(127,168,207,.25);
-    background: transparent; color: #e4e9f0;
-    font: 12px "Cascadia Mono", Consolas, monospace; caret-color: #7fa8cf; padding: 6px 4px;
+    border: 0; border-bottom: 1px solid rgba(37,99,160,.3);
+    background: transparent; color: #1b222b;
+    font: 12px "Cascadia Mono", Consolas, monospace; caret-color: #2563a0; padding: 6px 4px;
     transition: border-color .18s;
   }
-  .cmd-input:focus { outline: none; border-bottom-color: #7fa8cf; }
-  .cmd-input::placeholder { color: #57616f; letter-spacing: .04em; }
-  .cmd-out { flex: 0 1 auto; min-width: 0; max-width: 46%; font: 11px "Cascadia Mono", Consolas, monospace; color: #e2b25c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cmd-out.err { color: #e08078; }
+  .cmd-input:focus { outline: none; border-bottom-color: #2563a0; }
+  .cmd-input::placeholder { color: #93a0b0; letter-spacing: .04em; }
+  .cmd-out { flex: 0 1 auto; min-width: 0; max-width: 46%; font: 11px "Cascadia Mono", Consolas, monospace; color: #b8791d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd-out.err { color: #c2453a; }
 
   .col-head { display: none; }
   .theme-ivory .col-head {
@@ -489,7 +489,7 @@
   .theme-ivory .col-head span:last-child { text-align: right; }
   .theme-ivory .row-detail { border-top: 1px dashed #d9d3c6; }
   .theme-onyx .row-detail { border-top: 1px dashed rgba(224,184,75,.3); }
-  .theme-titan .row-detail { border-top: 1px dashed rgba(127,168,207,.3); }
+  .theme-titan .row-detail { border-top: 1px dashed rgba(37,99,160,.35); }
   .theme-porcelain .row-detail { border-top: 1px dashed #d8dcd7; }
 
   /* ============ 响应式 ============ */
@@ -527,14 +527,14 @@
   }
 </style>
 </head>
-<body data-theme="onyx">
+<body data-theme="titan">
 <main class="studio">
   <aside class="rail" aria-label="详情面板风格选择">
     <div class="masthead">Token Details<br><span class="slash">/</span> Style Lab</div>
     <div class="kicker">四方向比稿 · 04</div>
     <p class="rail-copy">同一份真实统计语义，四套 premium 视觉语言。简约、克制，但每一处细节都经得起看。</p>
     <div class="theme-list" role="group" aria-label="风格方向">
-      <button class="theme-choice" data-theme="onyx" aria-pressed="true">
+      <button class="theme-choice" data-theme="onyx" aria-pressed="false">
         <span class="choice-top"><span class="choice-no">01</span><span class="choice-name">Onyx Gold<em>曜石金</em></span></span>
         <span class="choice-note">暖黑底 + 香槟金细线，衬线大数字，低调的贵气</span>
         <span class="choice-strip"><i style="background:#17130d"></i><i style="background:#e8b84b"></i><i style="background:#f3ecdd"></i><i style="background:#96c0a4"></i></span>
@@ -544,10 +544,10 @@
         <span class="choice-note">暖白纸面 + 青铜编号索引，画册式排版</span>
         <span class="choice-strip"><i style="background:#fbfaf6"></i><i style="background:#b98a2e"></i><i style="background:#1c1917"></i><i style="background:#e4dfd4"></i></span>
       </button>
-      <button class="theme-choice" data-theme="titan" aria-pressed="false">
-        <span class="choice-top"><span class="choice-no">03</span><span class="choice-name">Titan Grey<em>钛灰</em></span></span>
-        <span class="choice-note">冷黑 + 钢蓝细线，等宽数字，仪器般精确</span>
-        <span class="choice-strip"><i style="background:#15181d"></i><i style="background:#7fa8cf"></i><i style="background:#e4e9f0"></i><i style="background:#e2b25c"></i></span>
+      <button class="theme-choice" data-theme="titan" aria-pressed="true">
+        <span class="choice-top"><span class="choice-no">03</span><span class="choice-name">Titan White<em>钛白</em></span></span>
+        <span class="choice-note">白底 + 钢蓝细线，等宽数字，仪器般精确</span>
+        <span class="choice-strip"><i style="background:#ffffff;outline:1px solid #d5dbe3"></i><i style="background:#2563a0"></i><i style="background:#1b222b"></i><i style="background:#b8791d"></i></span>
       </button>
       <button class="theme-choice" data-theme="porcelain" aria-pressed="false">
         <span class="choice-top"><span class="choice-no">04</span><span class="choice-name">Porcelain<em>瓷白</em></span></span>
@@ -561,23 +561,23 @@
   <section class="stage">
     <header class="stage-head">
       <div>
-        <div class="stage-no" id="stageNo">DIRECTION 01 / 04</div>
-        <h2 class="stage-title" id="themeTitle">Onyx Gold<span class="cn" id="themeTitleCn">曜石金</span></h2>
-        <p class="stage-subtitle" id="themeSubtitle">暖黑底配香槟金细线，衬线大数字，克制而贵气。</p>
+        <div class="stage-no" id="stageNo">DIRECTION 03 / 04</div>
+        <h2 class="stage-title" id="themeTitle">Titan White<span class="cn" id="themeTitleCn">钛白</span></h2>
+        <p class="stage-subtitle" id="themeSubtitle">白底配钢蓝细线，等宽数字与命令行，仪器般精确。</p>
       </div>
       <div class="stage-actions" aria-label="预览状态控制">
         <button class="control" data-state="live" data-active="true">正常数据</button>
         <button class="control" data-state="long" data-active="false">长标题</button>
         <button class="control" data-state="empty" data-active="false">空态</button>
         <button class="control" data-state="codex" data-active="false">Codex 样本</button>
-        <span class="hint">快捷键 1/2/3 切页 · 4/5 切来源 · 点数据行展开明细 · 钛灰风格可输命令（help）</span>
+        <span class="hint">快捷键 1/2/3 切页 · 4/5 切来源 · 点数据行展开明细 · 钛白风格可输命令（help）</span>
       </div>
     </header>
 
     <div class="stage-grid">
       <div class="canvas" id="canvas">
         <div class="window-wrap">
-          <section class="detail-window theme-onyx" id="detailWindow" aria-label="Token Details 详情预览">
+          <section class="detail-window theme-titan" id="detailWindow" aria-label="Token Details 详情预览">
             <header class="window-header" id="dragHandle">
               <div class="ticker" aria-hidden="true"><div class="ticker-inner"><span>Live · Token Telemetry · 今日 1,774 次 · 1.97亿 TOK · 42.3 T/S · ZCode + Codex 双源 · 最近 8 条加权</span><span>Live · Token Telemetry · 今日 1,774 次 · 1.97亿 TOK · 42.3 T/S · ZCode + Codex 双源 · 最近 8 条加权</span></div></div>
               <div class="header-row">
@@ -632,10 +632,10 @@
       density: "行距最舒展，编号索引引导视线。", fit: "给别人展示、截图发出去也体面。", cost: "低中：字体与细线为主，无复杂特效。"
     },
     titan: {
-      no: "DIRECTION 03 / 04", title: "Titan Grey", titleCn: "钛灰",
-      subtitle: "冷黑配钢蓝细线，等宽数字与命令行，仪器般精确。",
-      about: "钛灰走精密仪器路线：等宽数字对齐、钢蓝点缀、底部可输命令行。",
-      density: "等宽行距均匀，数字列最工整。", fit: "夜间编码、长时间挂机监控。", cost: "中：等宽排版与命令行交互需一并移植。"
+      no: "DIRECTION 03 / 04", title: "Titan White", titleCn: "钛白",
+      subtitle: "白底配钢蓝细线，等宽数字与命令行，仪器般精确。",
+      about: "钛白走精密仪器路线：白底干净，等宽数字对齐、钢蓝点缀、底部可输命令行。",
+      density: "等宽行距均匀，数字列最工整。", fit: "夜间之外的所有场景，亮色桌面。", cost: "中：等宽排版与命令行交互需一并移植。"
     },
     porcelain: {
       no: "DIRECTION 04 / 04", title: "Porcelain", titleCn: "瓷白",
@@ -681,7 +681,7 @@
     sessions: [["90分钟后复测 native 长跑内存：这是一个用于测试省略策略的超长会话标题", "首字 17.9s · 0.2 次/分 · 1,518 次 · 10-06 01:18", "30.9", "red", 31], ...base.zcode.sessions.slice(1)],
     totals: [["dots-studio/dots-3-note-preview:free / extremely-long-model-alias", "Kilo · 19,626,343 tok · 338 次 · 10%", "10%", "red", 10], ...base.zcode.totals.slice(1)]
   };
-  let state = { theme: "onyx", page: "overview", source: "zcode", mode: "live", closed: false };
+  let state = { theme: "titan", page: "overview", source: "zcode", mode: "live", closed: false };
   const $ = (s) => document.querySelector(s);
   const win = $("#detailWindow"), content = $("#content"), reopen = $("#reopen");
   const sourceLabel = (source) => source === "codex" ? "Codex" : "ZCode";
@@ -762,7 +762,7 @@
     else if (sourceKeys[e.key]) { state.source = sourceKeys[e.key]; render(); content.scrollTop = 0; }
   });
 
-  // 命令行（钛灰风格可见，逻辑全局生效）
+  // 命令行（钛白风格可见，逻辑全局生效）
   const cmdInput = $("#cmdInput"), cmdOut = $("#cmdOut");
   const say = (msg, err) => { cmdOut.textContent = msg; cmdOut.classList.toggle("err", !!err); };
   cmdInput.addEventListener("keydown", (e) => {
