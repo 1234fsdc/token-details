@@ -153,13 +153,13 @@
     display: flex; gap: 2px; padding: 3px;
     background: var(--src-track, var(--hover-bg));
     border: 1px solid var(--src-track-border, var(--win-line));
-    border-radius: 999px;
+    border-radius: 6px;
   }
   .source-tab {
     min-height: 26px; padding: 3px 8px;
     border: 0; background: transparent;
     color: var(--win-muted); font-size: 11px; letter-spacing: .04em;
-    border-radius: 999px; white-space: nowrap;
+    border-radius: 4px; white-space: nowrap;
     font-family: var(--font-tab, inherit);
     transition: background-color .18s, color .18s;
   }
@@ -408,7 +408,7 @@
   .theme-titan .page-tab { text-transform: uppercase; font-size: 12px; }
   .theme-titan .page-tab[aria-selected="true"] {
     background: #2563a0; color: #ffffff; font-weight: 600;
-    border-radius: 999px; box-shadow: none;
+    border-radius: 6px; box-shadow: none;
   }
   .theme-titan .page-tab[aria-selected="true"]:hover { background: #2563a0; color: #ffffff; }
   .theme-titan .source-tabs { background: #eef2f7; border-color: rgba(37,99,160,.3); }
@@ -428,7 +428,7 @@
     --win-border: 1px solid #dfe2dd; --win-radius: 14px;
     --win-shadow: 0 26px 55px rgba(20,35,28,.18);
     --header-border: 1px solid #e5e6e1;
-    --control-radius: 999px; --tab-gap: 4px;
+    --control-radius: 8px; --tab-gap: 4px;
     --font-ui: "Segoe UI", "Microsoft YaHei UI", sans-serif;
     --font-tab: "Segoe UI", sans-serif;
     --date-color: #155f47; --close-bg: rgba(21,95,71,.1); --close-ink: #155f47;
